@@ -7,7 +7,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from .schemas import QueryRequest, QueryResponse, IngestResponse, ResetResponse
 
 from bookchat.core.generate import get_rag_chain
-from bookchat.core.ingestion import ingest, load_store
+from bookchat.core.ingestion import ingest, load_store, reset_store
 
 
 from dotenv import load_dotenv
@@ -74,3 +74,14 @@ async def query_documents(body: QueryRequest):
         return QueryResponse(answer=answer, question=body.question)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+@app.delete("/reset", response_model=ResetResponse)
+async def reset_vectorstore():
+
+    try:
+        persist_dir = "./chroma"
+        reset_store(persist_dir=persist_dir)
+        invalidate_store()
+        return ResetResponse(message="Vectorstore has been reset successfully.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
