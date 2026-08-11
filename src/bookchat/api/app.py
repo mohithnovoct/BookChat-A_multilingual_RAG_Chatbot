@@ -6,6 +6,7 @@ import shutil
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from .schemas import QueryRequest, QueryResponse, IngestResponse, ResetResponse
 
+from bookchat.core.generate import get_rag_chain
 from bookchat.core.ingestion import ingest, load_store
 
 
@@ -59,3 +60,17 @@ async def ingest_documents(files: List[UploadFile] = File(...)):
         )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@app.post("/query", response_model=QueryResponse)
+async def query_documents(body: QueryRequest):
+    if not body.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    try:
+        store = get_store()
+        chain = get_rag_chain(store=store, k=body.k)
+        answer = chain.invoke(body.question)
+        return QueryResponse(answer=answer, question=body.question)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
