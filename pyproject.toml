@@ -1,7 +1,7 @@
 [project]
 name = "bookchat"
 version = "0.1.0"
-description = "Add your description here"
+description = "RAG API for chatting with your books and documents"
 readme = "README.md"
 authors = [
     { name = "Mohith Butta", email = "mohithbutta4002@gmail.com" }
@@ -14,7 +14,9 @@ dependencies = [
     "langchain-community>=0.4.2",
     "langchain-core>=1.5.3",
     "langchain-huggingface>=1.2.2",
+    "langchain-text-splitters>=1.1.2",
     "pypdf>=6.15.0",
+    "python-dotenv>=1.2.2",
     "sentence-transformers>=5.7.0",
 ]
 

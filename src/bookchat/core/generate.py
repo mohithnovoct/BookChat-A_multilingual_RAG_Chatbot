@@ -1,60 +1,59 @@
 import os
+from dataclasses import dataclass
 from typing import List, Optional
 
-from dataclasses import dataclass
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnablePassthrough, RunnableLambda
+from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
-from bookchat.core.ingestion import ingest, load_store
 
-from dotenv import load_dotenv
+from bookchat.config import require_hf_token
+from bookchat.core.ingestion import load_store
 
-load_dotenv()
+DEFAULT_SYSTEM_PROMPT = """You are a helpful assistant. Answer the user's question accurately using only the provided context. Every answer must explicitly name the source book and page/section where the information was found. If the context does not contain the answer, say 'Information not found in the source documents.'"""
 
-DEFAULT_SYSTEM_PROMPT = "You are an assistant. Answer the given questions using the context only."
 
 @dataclass
-class ModelParams():
+class ModelParams:
     name: str = "meta-llama/Llama-3.1-8B-Instruct"
     task: str = "text-generation"
-    max_new_tokens: int= 512
-    temperature: float = 0.3
+    max_new_tokens: int = 800
+    temperature: float = 0.5
 
 
-def model(params: ModelParams):
+def model(params: ModelParams) -> ChatHuggingFace:
     llm_endpoint = HuggingFaceEndpoint(
         repo_id=params.name,
         task=params.task,
         max_new_tokens=params.max_new_tokens,
         temperature=params.temperature,
-        huggingfacehub_api_token=os.environ.get("HF_TOKEN")
+        huggingfacehub_api_token=require_hf_token(),
     )
 
     return ChatHuggingFace(llm=llm_endpoint)
 
-def format_metadata(docs: List[Document]) -> str:
 
+def format_metadata(docs: List[Document]) -> str:
     formatted_chunks = []
 
     for doc in docs:
-        source = doc.metadata.get("filename") or os.path.basename(doc.metadata.get("source", "Unknown"))
+        source = doc.metadata.get("filename") or os.path.basename(
+            doc.metadata.get("source", "Unknown")
+        )
         page = doc.metadata.get("page")
-        page_info = f", Page {page+1}" if page is not None else ""
+        page_info = f", Page {page + 1}" if page is not None else ""
         header = f"[Source: {source}{page_info}]"
         formatted_chunks.append(f"{header}\n{doc.page_content}")
     return "\n\n".join(formatted_chunks)
 
-def retrieve(store: Chroma, query: str, k: int=4, persist_dir: str="./chroma") -> str:
 
-    docs = store.similarity_search(query, k)
-    return format_metadata(docs)
-
-
-def get_rag_chain(store: Optional[Chroma]=None, system_prompt: str=DEFAULT_SYSTEM_PROMPT, k: int=4):
-
+def get_rag_chain(
+    store: Optional[Chroma] = None,
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+    k: int = 4,
+):
     if store is None:
         store = load_store()
 
@@ -62,7 +61,7 @@ def get_rag_chain(store: Optional[Chroma]=None, system_prompt: str=DEFAULT_SYSTE
 
     prompt_template = PromptTemplate(
         template="{system_prompt} \n\n Context:{context} \n\n Question:{query}",
-        input_variables=["system_prompt", "context", "query"]
+        input_variables=["system_prompt", "context", "query"],
     )
 
     params = ModelParams()
@@ -72,7 +71,7 @@ def get_rag_chain(store: Optional[Chroma]=None, system_prompt: str=DEFAULT_SYSTE
         {
             "context": retriever | RunnableLambda(format_metadata),
             "query": RunnablePassthrough(),
-            "system_prompt": lambda _: system_prompt
+            "system_prompt": lambda _: system_prompt,
         }
         | prompt_template
         | llm
@@ -82,7 +81,7 @@ def get_rag_chain(store: Optional[Chroma]=None, system_prompt: str=DEFAULT_SYSTE
     return chain
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
     store = load_store()
     rag_chain = get_rag_chain(store)
 
@@ -91,7 +90,7 @@ if __name__=="__main__":
             query = input("User: ").strip()
             if not query:
                 continue
-            if query.lower() in ["q", "exit", "quit"]:
+            if query.lower() in {"q", "exit", "quit"}:
                 break
 
             print("\nAns: ")
