@@ -5,8 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", PROJECT_ROOT / "chroma"))
+CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", Path.cwd() / "chroma"))
 EMBEDDING_MODEL = os.environ.get(
     "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
 )

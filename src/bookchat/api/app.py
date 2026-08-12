@@ -6,6 +6,7 @@ import threading
 from typing import List
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
 from bookchat.api.schemas import (
     HealthResponse,
@@ -24,6 +25,12 @@ _store = None
 _store_lock = threading.Lock()
 
 app = FastAPI(title="BookChat")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def get_store():

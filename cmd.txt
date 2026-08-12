@@ -1,0 +1,5 @@
+# Terminal 1: Start the API
+uv run bookchat
+
+# Terminal 2: Serve the frontend
+python -m http.server 3000 --directory frontend
