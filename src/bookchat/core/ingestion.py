@@ -11,7 +11,17 @@ from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from bookchat.config import ALLOWED_SUFFIXES, CHROMA_DIR, EMBEDDING_MODEL
+import unicodedata
+import pytesseract
+from pdf2image import convert_from_path
+
+from bookchat.config import (
+    ALLOWED_SUFFIXES,
+    CHROMA_DIR,
+    EMBEDDING_MODEL,
+    POPPLER_PATH,
+    TESSERACT_CMD,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +34,52 @@ class IngestResult:
     files_replaced: List[str] = field(default_factory=list)
 
 
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
+
+if TESSERACT_CMD:
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+
+
+def _ocr_page(args: tuple[int, Any]) -> Document | None:
+    page_idx, image = args
+    text = pytesseract.image_to_string(image, lang="kan+eng")
+    if text.strip():
+        return Document(
+            page_content=text,
+            metadata={"page": page_idx},
+        )
+    return None
+
+
+def _ocr_pdf(file_path: str) -> List[Document]:
+    logger.info("Performing parallel OCR on '%s' using Tesseract (kan+eng)...", file_path)
+    kwargs = {"dpi": 150}
+    if POPPLER_PATH:
+        kwargs["poppler_path"] = POPPLER_PATH
+
+    images = convert_from_path(file_path, **kwargs)
+    documents: List[Document] = []
+
+    max_workers = min(os.cpu_count() or 4, 8)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = list(executor.map(_ocr_page, enumerate(images)))
+
+    for result in results:
+        if result:
+            result.metadata["source"] = file_path
+            documents.append(result)
+
+    return documents
+
+
+def _normalize_docs(docs: List[Document]) -> List[Document]:
+    for doc in docs:
+        if doc.page_content:
+            doc.page_content = unicodedata.normalize("NFC", doc.page_content)
+    return docs
+
+
 def _load_single_file(file_path: str) -> List[Document]:
     path = Path(file_path)
 
@@ -31,16 +87,30 @@ def _load_single_file(file_path: str) -> List[Document]:
         raise FileNotFoundError(f"File not found: {file_path}")
 
     ext = path.suffix.lower()
+    docs: List[Document] = []
+
     if ext == ".pdf":
-        loader = PyPDFLoader(file_path)
+        try:
+            loader = PyPDFLoader(file_path)
+            docs = loader.load()
+            total_text = "".join(d.page_content.strip() for d in docs)
+            if len(total_text) < 50:
+                logger.info("PDF text extraction resulted in minimal text; attempting OCR fallback.")
+                ocr_docs = _ocr_pdf(file_path)
+                if ocr_docs:
+                    docs = ocr_docs
+        except Exception as exc:
+            logger.warning("Standard PDF load failed (%s); attempting OCR fallback.", exc)
+            docs = _ocr_pdf(file_path)
     elif ext in {".txt", ".md"}:
         loader = TextLoader(file_path, encoding="utf-8")
+        docs = loader.load()
     else:
         raise ValueError(
             f"Unsupported file format {ext}. Supported file formats: .pdf, .txt, .md"
         )
 
-    return loader.load()
+    return _normalize_docs(docs)
 
 
 def load_documents(path: str) -> tuple[List[Document], List[str]]:
@@ -75,7 +145,7 @@ def get_chunks(
     documents: List[Document], chunk_size: int = 1500, chunk_overlap: int = 200
 ) -> List[Document]:
     splitter = RecursiveCharacterTextSplitter(
-        separators=["\n\n", "\n", " ", ""],
+        separators=["\n\n", "\n", "।", "॥", " ", ""],
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
     )
@@ -99,7 +169,10 @@ def load_store(
     embedding_model: str = EMBEDDING_MODEL,
 ) -> Chroma:
     directory = str(persist_dir or CHROMA_DIR)
-    embeddings = HuggingFaceEmbeddings(model=embedding_model)
+    embeddings = HuggingFaceEmbeddings(
+        model_name=embedding_model,
+        encode_kwargs={"batch_size": 64},
+    )
     return Chroma(persist_directory=directory, embedding_function=embeddings)
 
 

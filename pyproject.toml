@@ -16,6 +16,9 @@ dependencies = [
     "langchain-huggingface>=1.2.2",
     "langchain-text-splitters>=1.1.2",
     "pypdf>=6.15.0",
+    "pdf2image>=1.17.0",
+    "pillow>=11.0.0",
+    "pytesseract>=0.3.10",
     "python-dotenv>=1.2.2",
     "sentence-transformers>=5.7.0",
 ]

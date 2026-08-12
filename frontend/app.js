@@ -17,20 +17,87 @@ const modalOverlay    = document.getElementById("modal-overlay");
 const modalCancel     = document.getElementById("modal-cancel");
 const modalConfirm    = document.getElementById("modal-confirm");
 
-// ──────── State ────────
+const langSelect     = document.getElementById("lang-select");
+
+// ──────── State & i18n ────────
 let selectedFiles = [];
-let hasDocuments  = false;          // tracks if anything has been ingested
+let hasDocuments  = false;
+let currentLang   = "en";
+
+const translations = {
+  en: {
+    logo: "BookChat",
+    connecting: "Connecting…",
+    online: "API online",
+    offline: "API offline",
+    btn_reset: "Reset Store",
+    documents_title: "Documents",
+    drop_files: "Drop files here or",
+    browse: "browse",
+    drop_hint: "PDF, TXT, MD — up to 500 MB each",
+    btn_upload: "Upload & Ingest",
+    chat_title: "Ask a Question",
+    empty_chat: "Upload a document and start asking questions",
+    input_placeholder: "Ask something about your documents…",
+    modal_title: "Reset Vector Store",
+    modal_desc: "This will permanently delete all ingested documents. Are you sure?",
+    modal_cancel: "Cancel",
+    modal_confirm: "Reset",
+    uploading: "Uploading and ingesting…",
+    resetting: "Resetting vector store…",
+  },
+  kn: {
+    logo: "ಬುಕ್‍ಚಾಟ್",
+    connecting: "ಸಂಪರ್ಕಿಸಲಾಗುತ್ತಿದೆ…",
+    online: "API ಸಕ್ರಿಯವಾಗಿದೆ",
+    offline: "API ನಿಷ್ಕ್ರಿಯವಾಗಿದೆ",
+    btn_reset: "ಮರುಹೊಂದಿಸಿ",
+    documents_title: "ದಾಖಲೆಗಳು",
+    drop_files: "ಫೈಲ್‌ಗಳನ್ನು ಇಲ್ಲಿ ಹಾಕಿ ಅಥವಾ",
+    browse: "ಹುಡುಕಿ",
+    drop_hint: "PDF, TXT, MD — ತಲಾ 500 MB ವರೆಗೆ",
+    btn_upload: "ಅಪ್‌ಲೋಡ್ ಮಾಡಿ",
+    chat_title: "ಪ್ರಶ್ನೆ ಕೇಳಿ",
+    empty_chat: "ದಾಖಲೆಯನ್ನು ಅಪ್‌ಲೋಡ್ ಮಾಡಿ ಮತ್ತು ಪ್ರಶ್ನೆಗಳನ್ನು ಕೇಳಿ",
+    input_placeholder: "ನಿಮ್ಮ ದಾಖಲೆಗಳ ಬಗ್ಗೆ ಏನನ್ನಾದರೂ ಕೇಳಿ…",
+    modal_title: "ವೆಕ್ಟರ್ ಸ್ಟೋರ್ ಮರುಹೊಂದಿಸಿ",
+    modal_desc: "ಇದು ಎಲ್ಲಾ ದಾಖಲೆಗಳನ್ನು ಕಾಯಂ ಆಗಿ ಅಳಿಸುತ್ತದೆ. ನೀವು ಖಚಿತವಾಗಿದ್ದೀರಾ?",
+    modal_cancel: "ರದ್ದುಮಾಡಿ",
+    modal_confirm: "ಮರುಹೊಂದಿಸಿ",
+    uploading: "ಅಪ್‌ಲೋಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ…",
+    resetting: "ಮರುಹೊಂದಿಸಲಾಗುತ್ತಿದೆ…",
+  }
+};
+
+function setLanguage(lang) {
+  currentLang = lang;
+  const t = translations[lang] || translations.en;
+
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    const key = el.getAttribute("data-i18n");
+    if (t[key]) {
+      el.textContent = t[key];
+    }
+  });
+
+  queryInput.placeholder = t.input_placeholder;
+}
+
+langSelect.addEventListener("change", (e) => {
+  setLanguage(e.target.value);
+});
 
 // ──────── Health check ────────
 async function checkHealth() {
+  const t = translations[currentLang] || translations.en;
   try {
     const res = await fetch(`${API_BASE}/health`);
     if (!res.ok) throw new Error();
     healthDot.className  = "health-dot ok";
-    healthLabel.textContent = "API online";
+    healthLabel.textContent = t.online;
   } catch {
     healthDot.className  = "health-dot fail";
-    healthLabel.textContent = "API offline";
+    healthLabel.textContent = t.offline;
   }
 }
 
@@ -112,7 +179,8 @@ btnUpload.addEventListener("click", async () => {
 
   btnUpload.classList.add("loading");
   btnUpload.disabled = true;
-  setStatus("Uploading and ingesting…", "loading");
+  const t = translations[currentLang] || translations.en;
+  setStatus(t.uploading, "loading");
 
   const form = new FormData();
   selectedFiles.forEach((f) => form.append("files", f));
@@ -186,7 +254,8 @@ modalOverlay.addEventListener("click", (e) => {
 
 modalConfirm.addEventListener("click", async () => {
   modalOverlay.hidden = true;
-  setStatus("Resetting vector store…", "loading");
+  const t = translations[currentLang] || translations.en;
+  setStatus(t.resetting, "loading");
 
   try {
     const res = await fetch(`${API_BASE}/reset`, { method: "DELETE" });

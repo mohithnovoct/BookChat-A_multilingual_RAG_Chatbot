@@ -7,7 +7,7 @@
   <meta name="description" content="Upload books and documents, then ask questions about them using AI-powered retrieval." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Noto+Sans+Kannada:wght@300;400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -16,12 +16,16 @@
   <header id="app-header">
     <div class="header-left">
       <span class="logo-icon">📖</span>
-      <h1>BookChat</h1>
+      <h1 data-i18n="logo">BookChat</h1>
     </div>
     <div class="header-right">
+      <select id="lang-select" class="lang-select" title="Language / ಭಾಷೆ">
+        <option value="en">English</option>
+        <option value="kn">ಕನ್ನಡ (Kannada)</option>
+      </select>
       <span id="health-indicator" class="health-dot" title="Checking API..."></span>
-      <span id="health-label" class="health-label">Connecting…</span>
-      <button id="btn-reset" class="btn-ghost" title="Clear all documents">Reset Store</button>
+      <span id="health-label" class="health-label" data-i18n="connecting">Connecting…</span>
+      <button id="btn-reset" class="btn-ghost" title="Clear all documents" data-i18n="btn_reset">Reset Store</button>
     </div>
   </header>
 
@@ -30,7 +34,7 @@
 
     <!-- Left: Upload Panel -->
     <section id="upload-panel" class="panel">
-      <h2>Documents</h2>
+      <h2 data-i18n="documents_title">Documents</h2>
       <div
         id="drop-zone"
         class="drop-zone"
@@ -40,8 +44,8 @@
       >
         <div class="drop-zone-content">
           <span class="drop-icon">⬆</span>
-          <p>Drop files here or <span class="browse-link">browse</span></p>
-          <p class="drop-hint">PDF, TXT, MD — up to 50 MB each</p>
+          <p id="drop-zone-text"><span data-i18n="drop_files">Drop files here or</span> <span class="browse-link" data-i18n="browse">browse</span></p>
+          <p class="drop-hint" data-i18n="drop_hint">PDF, TXT, MD — up to 500 MB each</p>
         </div>
         <input
           type="file"
@@ -52,17 +56,17 @@
         />
       </div>
       <div id="file-list" class="file-list" aria-live="polite"></div>
-      <button id="btn-upload" class="btn-primary" disabled>Upload &amp; Ingest</button>
+      <button id="btn-upload" class="btn-primary" disabled data-i18n="btn_upload">Upload &amp; Ingest</button>
       <div id="upload-status" class="status-message" aria-live="polite"></div>
     </section>
 
     <!-- Right: Chat Panel -->
     <section id="chat-panel" class="panel">
-      <h2>Ask a Question</h2>
+      <h2 data-i18n="chat_title">Ask a Question</h2>
       <div id="chat-messages" class="chat-messages">
         <div class="empty-state">
           <span class="empty-icon">💬</span>
-          <p>Upload a document and start asking questions</p>
+          <p id="empty-chat-msg" data-i18n="empty_chat">Upload a document and start asking questions</p>
         </div>
       </div>
       <form id="query-form" class="query-bar">
@@ -87,11 +91,11 @@
   <!-- Confirmation Modal -->
   <div id="modal-overlay" class="modal-overlay" hidden>
     <div class="modal" role="dialog" aria-labelledby="modal-title">
-      <h3 id="modal-title">Reset Vector Store</h3>
-      <p>This will permanently delete all ingested documents. Are you sure?</p>
+      <h3 id="modal-title" data-i18n="modal_title">Reset Vector Store</h3>
+      <p id="modal-desc" data-i18n="modal_desc">This will permanently delete all ingested documents. Are you sure?</p>
       <div class="modal-actions">
-        <button id="modal-cancel" class="btn-ghost">Cancel</button>
-        <button id="modal-confirm" class="btn-danger">Reset</button>
+        <button id="modal-cancel" class="btn-ghost" data-i18n="modal_cancel">Cancel</button>
+        <button id="modal-confirm" class="btn-danger" data-i18n="modal_confirm">Reset</button>
       </div>
     </div>
   </div>

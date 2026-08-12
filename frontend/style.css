@@ -26,7 +26,7 @@
   --radius-sm:   6px;
   --shadow:      0 2px 12px rgba(0,0,0,.35);
   --transition:  .2s ease;
-  --font:        'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font:        'Inter', 'Noto Sans Kannada', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 html {
@@ -78,6 +78,23 @@ body {
   display: flex;
   align-items: center;
   gap: .85rem;
+}
+
+.lang-select {
+  background: var(--surface-alt);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.65rem;
+  font-size: 0.85rem;
+  font-family: var(--font);
+  cursor: pointer;
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+.lang-select:hover, .lang-select:focus {
+  border-color: var(--accent);
 }
 
 /* Health dot */

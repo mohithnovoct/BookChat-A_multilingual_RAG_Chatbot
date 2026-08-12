@@ -12,7 +12,7 @@ from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from bookchat.config import require_hf_token
 from bookchat.core.ingestion import load_store
 
-DEFAULT_SYSTEM_PROMPT = """You are a helpful assistant. Answer the user's question accurately using only the provided context. Every answer must explicitly name the source book and page/section where the information was found. If the context does not contain the answer, say 'Information not found in the source documents.'"""
+DEFAULT_SYSTEM_PROMPT = """You are a helpful multilingual assistant with support for Kannada (ಕನ್ನಡ) and English. Answer the user's question accurately using only the provided context. Answer in the same language as the user's question (e.g. reply in Kannada if the question is in Kannada). Every answer must explicitly name the source book where the information was found. If the context does not contain the answer, say 'Information not found in the source documents.' (or in Kannada: 'ಮೂಲ ದಾಖಲೆಗಳಲ್ಲಿ ಮಾಹಿತಿ ಕಂಡುಬಂದಿಲ್ಲ.')."""
 
 
 @dataclass
