@@ -12,8 +12,7 @@ from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from bookchat.config import require_hf_token
 from bookchat.core.ingestion import load_store
 
-# Language codes → explicit instruction injected at the top of the system prompt.
-# This overrides the LLM's tendency to mirror the language of the retrieved context.
+
 _LANG_INSTRUCTIONS: dict[str, str] = {
     "en": "You MUST respond in English only.",
     "kn": "You MUST respond in Kannada (ಕನ್ನಡ) only.",

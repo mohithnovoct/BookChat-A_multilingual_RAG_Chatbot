@@ -147,23 +147,7 @@ def get_chunks(
     breakpoint_threshold_amount: float = 95.0,
     embedding_model: str = EMBEDDING_MODEL,
 ) -> List[Document]:
-    """Split *documents* into semantically coherent chunks.
-
-    Uses LangChain's SemanticChunker which embeds every sentence and
-    cuts at similarity-drop breakpoints, keeping each chunk topically
-    coherent — much better for RAG than fixed-size splitting.
-
-    Args:
-        documents: LangChain Document objects to split.
-        breakpoint_threshold_type: One of "percentile" (default),
-            "standard_deviation", "interquartile", or "gradient".
-        breakpoint_threshold_amount: Controls the sensitivity of the
-            breakpoint detector.  For "percentile" this is the percentile
-            (0-100); lower values = more / smaller chunks.
-        embedding_model: HuggingFace model used to compute sentence
-            embeddings.  Defaults to the same model used by the vector
-            store so no second model needs to be loaded.
-    """
+   
     embeddings = HuggingFaceEmbeddings(
         model_name=embedding_model,
         encode_kwargs={"batch_size": 64},
