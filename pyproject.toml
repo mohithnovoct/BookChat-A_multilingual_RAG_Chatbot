@@ -21,6 +21,7 @@ dependencies = [
     "pytesseract>=0.3.10",
     "python-dotenv>=1.2.2",
     "sentence-transformers>=5.7.0",
+    "langchain-experimental>=0.4.2",
 ]
 
 [project.scripts]

@@ -138,7 +138,7 @@ async def ingest_documents(files: List[UploadFile] = File(...)):
 async def query_documents(body: QueryRequest):
     try:
         store = get_store()
-        chain = get_rag_chain(store=store, k=body.k)
+        chain = get_rag_chain(store=store, k=body.k, lang=body.lang)
         answer = chain.invoke(body.question)
         return QueryResponse(answer=answer, question=body.question)
     except RuntimeError as exc:

@@ -8,8 +8,8 @@ from typing import List
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
+from langchain_experimental.text_splitter import SemanticChunker
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 import unicodedata
 import pytesseract
@@ -142,12 +142,37 @@ def load_documents(path: str) -> tuple[List[Document], List[str]]:
 
 
 def get_chunks(
-    documents: List[Document], chunk_size: int = 1500, chunk_overlap: int = 200
+    documents: List[Document],
+    breakpoint_threshold_type: str = "percentile",
+    breakpoint_threshold_amount: float = 95.0,
+    embedding_model: str = EMBEDDING_MODEL,
 ) -> List[Document]:
-    splitter = RecursiveCharacterTextSplitter(
-        separators=["\n\n", "\n", "।", "॥", " ", ""],
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
+    """Split *documents* into semantically coherent chunks.
+
+    Uses LangChain's SemanticChunker which embeds every sentence and
+    cuts at similarity-drop breakpoints, keeping each chunk topically
+    coherent — much better for RAG than fixed-size splitting.
+
+    Args:
+        documents: LangChain Document objects to split.
+        breakpoint_threshold_type: One of "percentile" (default),
+            "standard_deviation", "interquartile", or "gradient".
+        breakpoint_threshold_amount: Controls the sensitivity of the
+            breakpoint detector.  For "percentile" this is the percentile
+            (0-100); lower values = more / smaller chunks.
+        embedding_model: HuggingFace model used to compute sentence
+            embeddings.  Defaults to the same model used by the vector
+            store so no second model needs to be loaded.
+    """
+    embeddings = HuggingFaceEmbeddings(
+        model_name=embedding_model,
+        encode_kwargs={"batch_size": 64},
+    )
+
+    splitter = SemanticChunker(
+        embeddings=embeddings,
+        breakpoint_threshold_type=breakpoint_threshold_type,
+        breakpoint_threshold_amount=breakpoint_threshold_amount,
     )
 
     chunks = splitter.split_documents(documents)

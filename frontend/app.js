@@ -222,7 +222,7 @@ queryForm.addEventListener("submit", async (e) => {
     const res = await fetch(`${API_BASE}/query`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, k: 4 }),
+      body: JSON.stringify({ question, k: 4, lang: currentLang }),
     });
 
     const data = await res.json();

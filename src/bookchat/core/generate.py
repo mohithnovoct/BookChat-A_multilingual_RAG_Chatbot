@@ -12,7 +12,20 @@ from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from bookchat.config import require_hf_token
 from bookchat.core.ingestion import load_store
 
-DEFAULT_SYSTEM_PROMPT = """You are a helpful multilingual assistant with support for Kannada (ಕನ್ನಡ) and English. Answer the user's question accurately using only the provided context. Answer in the same language as the user's question (e.g. reply in Kannada if the question is in Kannada). Every answer must explicitly name the source book where the information was found. If the context does not contain the answer, say 'Information not found in the source documents.' (or in Kannada: 'ಮೂಲ ದಾಖಲೆಗಳಲ್ಲಿ ಮಾಹಿತಿ ಕಂಡುಬಂದಿಲ್ಲ.')."""
+# Language codes → explicit instruction injected at the top of the system prompt.
+# This overrides the LLM's tendency to mirror the language of the retrieved context.
+_LANG_INSTRUCTIONS: dict[str, str] = {
+    "en": "You MUST respond in English only.",
+    "kn": "You MUST respond in Kannada (ಕನ್ನಡ) only.",
+}
+_DEFAULT_LANG = "en"
+
+DEFAULT_SYSTEM_PROMPT = """You are a helpful multilingual assistant with support for Kannada (ಕನ್ನಡ) and English. Answer the user's question accurately using only the provided context. Every answer must explicitly name the source book where the information was found. If the context does not contain the answer, say 'Information not found in the source documents.' (or in Kannada: 'ಮೂಲ ದಾಖಲೆಗಳಲ್ಲಿ ಮಾಹಿತಿ ಕಂಡುಬಂದಿಲ್ಲ.')."""
+
+
+def build_system_prompt(lang: str = _DEFAULT_LANG) -> str:
+    lang_instruction = _LANG_INSTRUCTIONS.get(lang, _LANG_INSTRUCTIONS[_DEFAULT_LANG])
+    return f"{lang_instruction}\n\n{DEFAULT_SYSTEM_PROMPT}"
 
 
 @dataclass
@@ -53,6 +66,7 @@ def get_rag_chain(
     store: Optional[Chroma] = None,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     k: int = 4,
+    lang: str = _DEFAULT_LANG,
 ):
     if store is None:
         store = load_store()
@@ -67,11 +81,13 @@ def get_rag_chain(
     params = ModelParams()
     llm = model(params)
 
+    resolved_prompt = build_system_prompt(lang)
+
     chain = (
         {
             "context": retriever | RunnableLambda(format_metadata),
             "query": RunnablePassthrough(),
-            "system_prompt": lambda _: system_prompt,
+            "system_prompt": lambda _: resolved_prompt,
         }
         | prompt_template
         | llm

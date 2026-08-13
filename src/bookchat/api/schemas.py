@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1)
     k: int = Field(default=4, ge=1, le=20)
+    lang: str = Field(default="en", pattern=r"^[a-z]{2}$")
 
     @field_validator("question")
     @classmethod
