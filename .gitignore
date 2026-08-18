@@ -11,4 +11,4 @@ wheels/
 .env
 
 # Local vector store
-chroma/
+local_qdrant_db/

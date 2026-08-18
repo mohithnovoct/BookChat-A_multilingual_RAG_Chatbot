@@ -3,12 +3,18 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import List, Tuple, Set
 
-from langchain_chroma import Chroma
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any
+
+from langchain_qdrant import QdrantVectorStore
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, Filter, FieldCondition, MatchValue, FilterSelector
+
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
-from langchain_experimental.text_splitter import SemanticChunker
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 
 import unicodedata
@@ -34,8 +40,12 @@ class IngestResult:
     files_replaced: List[str] = field(default_factory=list)
 
 
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+embeddings = HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL,
+        encode_kwargs={"batch_size": 64},
+    )
+
+
 
 if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
@@ -123,40 +133,41 @@ def load_documents(path: str) -> tuple[List[Document], List[str]]:
 
     if target.is_file():
         documents.extend(_load_single_file(str(target)))
-    elif target.is_dir():
+        return documents, warnings
+    
+    if target.is_dir():
+        file_paths = []
         for root, _, files in os.walk(target):
             for file in files:
                 file_path = Path(root) / file
                 if file_path.suffix.lower() in ALLOWED_SUFFIXES:
-                    try:
-                        docs = _load_single_file(str(file_path))
-                        documents.extend(docs)
-                    except Exception as exc:
-                        message = f"Failed to load '{file_path}': {exc}"
-                        logger.warning(message)
-                        warnings.append(message)
-    else:
-        raise ValueError(f"Invalid path type: {path}")
+                    file_paths.append(str(file_path))
 
-    return documents, warnings
+        max_workers = min(os.cpu_count() or 4, 16)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_path = {executor.submit(_load_single_file, fp): fp for fp in file_paths}
+            
+            for future in as_completed(future_to_path):
+                fp = future_to_path[future]
+                try:
+                    docs = future.result()
+                    documents.extend(docs)
+                except Exception as exc:
+                    msg = f"Failed to load '{fp}': {exc}"
+                    logger.warning(msg)
+                    warnings.append(msg)
+
+        return documents, warnings
+
+    raise ValueError(f"Invalid path type: {path}")
 
 
-def get_chunks(
-    documents: List[Document],
-    breakpoint_threshold_type: str = "percentile",
-    breakpoint_threshold_amount: float = 95.0,
-    embedding_model: str = EMBEDDING_MODEL,
-) -> List[Document]:
-   
-    embeddings = HuggingFaceEmbeddings(
-        model_name=embedding_model,
-        encode_kwargs={"batch_size": 64},
-    )
-
-    splitter = SemanticChunker(
-        embeddings=embeddings,
-        breakpoint_threshold_type=breakpoint_threshold_type,
-        breakpoint_threshold_amount=breakpoint_threshold_amount,
+def get_chunks(documents: List[Document], chunk_size: int = 512, chunk_overlap: int = 128) -> List[Document]:
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        length_function=len,
+        separators=["\n\n", "\n", ".", " "],
     )
 
     chunks = splitter.split_documents(documents)
@@ -173,23 +184,32 @@ def get_chunks(
     return chunks
 
 
-def load_store(
-    persist_dir: Path | str | None = None,
-    embedding_model: str = EMBEDDING_MODEL,
-) -> Chroma:
-    directory = str(persist_dir or CHROMA_DIR)
-    embeddings = HuggingFaceEmbeddings(
-        model_name=embedding_model,
-        encode_kwargs={"batch_size": 64},
+def init_qdrant_store() -> QdrantVectorStore:
+    """Initializes Qdrant Client with optimized collection configs."""
+    client = QdrantClient(path="./local_qdrant_db", timeout=60)
+    
+    if not client.collection_exists(collection_name="test"):
+        client.create_collection(
+            collection_name="test",
+            vectors_config=VectorParams(
+                size=1024,
+                distance=Distance.COSINE
+            )
+        )
+    
+    return QdrantVectorStore(
+        client=client,
+        collection_name="test",
+        embedding=embeddings
     )
-    return Chroma(persist_directory=directory, embedding_function=embeddings)
 
 
-def reset_store(persist_dir: Path | str | None = None) -> None:
-    directory = Path(persist_dir or CHROMA_DIR)
+def reset_store(db_path: str = "./local_qdrant_db") -> None:
+    """Removes the entire local Qdrant directory tree safely."""
+    directory = Path(db_path)
     if directory.exists():
         shutil.rmtree(directory)
-        logger.info("Reset vectorstore at '%s'", directory)
+        logger.info("Reset local Qdrant vectorstore directory at '%s'", directory)
 
 
 def _filenames_from_chunks(chunks: List[Document]) -> set[str]:
@@ -200,43 +220,64 @@ def _filenames_from_chunks(chunks: List[Document]) -> set[str]:
     }
 
 
-def _filename_exists(store: Chroma, filename: str) -> bool:
+def _filename_exists(store: QdrantVectorStore, filename: str) -> bool:
     results = store._collection.get(where={"filename": filename}, limit=1)
     return bool(results.get("ids"))
 
 
-def delete_by_filenames(store: Chroma, filenames: set[str]) -> list[str]:
-    replaced: list[str] = []
+def delete_by_filenames(store: QdrantVectorStore, filenames: Set[str]) -> List[str]:
+    """Uses Qdrant's fast single-stage filtering engine to erase entries instantly."""
+    replaced: List[str] = []
+    if not filenames:
+        return replaced
+
     for filename in sorted(filenames):
-        if _filename_exists(store, filename):
-            store.delete(where={"filename": filename})
+        # Instead of searching if it exists first, Qdrant allows a safe conditional delete sweep
+        try:
+            filter_condition = Filter(
+                must=[
+                    FieldCondition(
+                        key="metadata.filename",
+                        match=MatchValue(value=filename)
+                    )
+                ]
+            )
+            store.client.delete(
+                collection_name=store.collection_name,
+                points_selector=FilterSelector(filter=filter_condition)
+            )
             replaced.append(filename)
-            logger.info("Removed existing chunks for '%s'", filename)
+            logger.info("Executed flush sweep for tracking context: '%s'", filename)
+        except Exception as e:
+            logger.error("Failed to delete records for %s: %s", filename, e)
+            
     return replaced
 
 
-def build_index(store: Chroma, chunks: List[Document]) -> tuple[Chroma, list[str]]:
-    filenames = _filenames_from_chunks(chunks)
+def build_index(store: QdrantVectorStore, chunks: List[Document]) -> Tuple[QdrantVectorStore, List[str]]:
+    """Batches document additions to prevent network overhead bottlenecks."""
+    filenames = {chunk.metadata.get("filename") for chunk in chunks if chunk.metadata.get("filename")}
     replaced = delete_by_filenames(store, filenames)
 
     if chunks:
-        store.add_documents(chunks)
-
+        # Micro-batching chunk uploads minimizes server network overhead locks
+        batch_size = 256
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
+            store.add_documents(batch)
+            
     return store, replaced
 
 
-def ingest(
-    docs_path: str, persist_dir: Path | str | None = None
-) -> IngestResult:
-    store = load_store(persist_dir=persist_dir)
+def ingest(docs_path: str) -> IngestResult:
+    """Refactored main orchestrator using low-latency components."""
+    store = init_qdrant_store()
 
     docs, warnings = load_documents(docs_path)
     chunks = get_chunks(docs)
 
     _, replaced = build_index(store, chunks)
-    logger.info(
-        "Ingested %d documents into %d chunks", len(docs), len(chunks)
-    )
+    logger.info("Ingested %d documents into %d chunks", len(docs), len(chunks))
 
     return IngestResult(
         document_count=len(docs),

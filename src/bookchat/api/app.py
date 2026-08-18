@@ -17,7 +17,7 @@ from bookchat.api.schemas import (
 )
 from bookchat.config import ALLOWED_SUFFIXES, MAX_UPLOAD_BYTES
 from bookchat.core.generate import get_rag_chain
-from bookchat.core.ingestion import ingest, load_store, reset_store
+from bookchat.core.ingestion import ingest, init_qdrant_store, reset_store
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ _store = None
 _store_lock = threading.Lock()
 
 app = FastAPI(title="BookChat")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,7 +38,7 @@ def get_store():
     global _store
     with _store_lock:
         if _store is None:
-            _store = load_store()
+            _store = init_qdrant_store()
         return _store
 
 

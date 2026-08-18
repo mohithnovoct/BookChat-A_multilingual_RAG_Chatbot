@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass
 from typing import List, Optional
 
-from langchain_chroma import Chroma
+from langchain_qdrant import QdrantVectorStore
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
@@ -10,7 +10,7 @@ from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 
 from bookchat.config import require_hf_token
-from bookchat.core.ingestion import load_store
+from bookchat.core.ingestion import init_qdrant_store
 
 
 _LANG_INSTRUCTIONS: dict[str, str] = {
@@ -32,7 +32,8 @@ class ModelParams:
     name: str = "meta-llama/Llama-3.1-8B-Instruct"
     task: str = "text-generation"
     max_new_tokens: int = 800
-    temperature: float = 0.5
+    temperature: float = 0.3
+    repetition_penalty: float = 1.15
 
 
 def model(params: ModelParams) -> ChatHuggingFace:
@@ -42,6 +43,7 @@ def model(params: ModelParams) -> ChatHuggingFace:
         max_new_tokens=params.max_new_tokens,
         temperature=params.temperature,
         huggingfacehub_api_token=require_hf_token(),
+        repetition_penalty=params.repetition_penalty
     )
 
     return ChatHuggingFace(llm=llm_endpoint)
@@ -54,21 +56,19 @@ def format_metadata(docs: List[Document]) -> str:
         source = doc.metadata.get("filename") or os.path.basename(
             doc.metadata.get("source", "Unknown")
         )
-        page = doc.metadata.get("page")
-        page_info = f", Page {page + 1}" if page is not None else ""
-        header = f"[Source: {source}{page_info}]"
+        header = f"[Source: {source}]"
         formatted_chunks.append(f"{header}\n{doc.page_content}")
     return "\n\n".join(formatted_chunks)
 
 
 def get_rag_chain(
-    store: Optional[Chroma] = None,
+    store: Optional[QdrantVectorStore] = None,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     k: int = 4,
     lang: str = _DEFAULT_LANG,
 ):
     if store is None:
-        store = load_store()
+        store = init_qdrant_store()
 
     retriever = store.as_retriever(search_kwargs={"k": k})
 
@@ -97,7 +97,7 @@ def get_rag_chain(
 
 
 if __name__ == "__main__":
-    store = load_store()
+    store = init_qdrant_store()
     rag_chain = get_rag_chain(store)
 
     while True:
