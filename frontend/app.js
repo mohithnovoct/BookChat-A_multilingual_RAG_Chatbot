@@ -66,6 +66,27 @@ const translations = {
     modal_confirm: "ಮರುಹೊಂದಿಸಿ",
     uploading: "ಅಪ್‌ಲೋಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ…",
     resetting: "ಮರುಹೊಂದಿಸಲಾಗುತ್ತಿದೆ…",
+  },
+  pa: {
+    logo: "ਬੁੱਕਚੈਟ",
+    connecting: "ਕਨੈਕਟ ਕੀਤਾ ਜਾ ਰਿਹਾ ਹੈ…",
+    online: "API ਔਨਲਾਈਨ ਹੈ",
+    offline: "API ਔਫਲਾਈਨ ਹੈ",
+    btn_reset: "ਸਟੋਰ ਰੀਸੈਟ ਕਰੋ",
+    documents_title: "ਦਸਤਾਵੇਜ਼",
+    drop_files: "ਇੱਥੇ ਫ਼ਾਈਲਾਂ ਸੁੱਟੋ ਜਾਂ",
+    browse: "ਬ੍ਰਾਊਜ਼ ਕਰੋ",
+    drop_hint: "PDF, TXT, MD — ਹਰੇਕ 500 MB ਤੱਕ",
+    btn_upload: "ਅੱਪਲੋਡ ਅਤੇ ਇੰਜੈਸਟ ਕਰੋ",
+    chat_title: "ਸਵਾਲ ਪੁੱਛੋ",
+    empty_chat: "ਇੱਕ ਦਸਤਾਵੇਜ਼ ਅੱਪਲੋਡ ਕਰੋ ਅਤੇ ਸਵਾਲ ਪੁੱਛਣਾ ਸ਼ੁਰੂ ਕਰੋ",
+    input_placeholder: "ਆਪਣੇ ਦਸਤਾਵੇਜ਼ਾਂ ਬਾਰੇ ਕੁਝ ਪੁੱਛੋ…",
+    modal_title: "ਵੈਕਟਰ ਸਟੋਰ ਰੀਸੈਟ ਕਰੋ",
+    modal_desc: "ਇਹ ਸਾਰੇ ਇੰਜੈਸਟ ਕੀਤੇ ਦਸਤਾਵੇਜ਼ਾਂ ਨੂੰ ਪੱਕੇ ਤੌਰ 'ਤੇ ਮਿਟਾ ਦੇਵੇਗਾ। ਕੀ ਤੁਸੀਂ ਯਕੀਨੀ ਹੋ?",
+    modal_cancel: "ਰੱਦ ਕਰੋ",
+    modal_confirm: "ਰੀਸੈਟ ਕਰੋ",
+    uploading: "ਅੱਪਲੋਡ ਅਤੇ ਇੰਜੈਸਟ ਕੀਤਾ ਜਾ ਰਿਹਾ ਹੈ…",
+    resetting: "ਵੈਕਟਰ ਸਟੋਰ ਰੀਸੈਟ ਕੀਤਾ ਜਾ ਰਿਹਾ ਹੈ…",
   }
 };
 

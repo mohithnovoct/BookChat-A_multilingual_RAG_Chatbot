@@ -2,7 +2,6 @@ import logging
 import os
 import shutil
 import tempfile
-import threading
 from typing import List
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -21,9 +20,6 @@ from bookchat.core.ingestion import ingest, init_qdrant_store, reset_store
 
 logger = logging.getLogger(__name__)
 
-_store = None
-_store_lock = threading.Lock()
-
 app = FastAPI(title="BookChat")
 
 app.add_middleware(
@@ -33,20 +29,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ──────── Constants ────────
 
-def get_store():
-    global _store
-    with _store_lock:
-        if _store is None:
-            _store = init_qdrant_store()
-        return _store
+STREAM_CHUNK = 1024 * 1024  # 1 MB chunks for streaming uploads to disk
 
 
-def invalidate_store() -> None:
-    global _store
-    with _store_lock:
-        _store = None
-
+# ──────── Helpers ────────
 
 def _safe_filename(filename: str | None, suffix: str, used_names: set[str]) -> str:
     base_name = os.path.basename(filename or f"file{suffix}")
@@ -63,6 +51,26 @@ def _safe_filename(filename: str | None, suffix: str, used_names: set[str]) -> s
             return candidate
         counter += 1
 
+
+async def _stream_to_disk(upload: UploadFile, dest: str, max_bytes: int) -> int:
+    """Streams an uploaded file to disk in chunks, avoiding loading it entirely into RAM."""
+    total = 0
+    with open(dest, "wb") as f:
+        while chunk := await upload.read(STREAM_CHUNK):
+            total += len(chunk)
+            if total > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"File '{upload.filename}' exceeds the "
+                        f"{max_bytes // (1024 * 1024)} MB upload limit."
+                    ),
+                )
+            f.write(chunk)
+    return total
+
+
+# ──────── Endpoints ────────
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
@@ -90,24 +98,14 @@ async def ingest_documents(files: List[UploadFile] = File(...)):
                     ),
                 )
 
-            content = await upload.read()
-            if len(content) > MAX_UPLOAD_BYTES:
-                raise HTTPException(
-                    status_code=413,
-                    detail=(
-                        f"File '{upload.filename}' exceeds the "
-                        f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit."
-                    ),
-                )
-
             safe_name = _safe_filename(upload.filename, suffix, used_names)
             tmp_path = os.path.join(tmp_dir, safe_name)
-            with open(tmp_path, "wb") as file_handle:
-                file_handle.write(content)
+
+            # Stream file to disk in chunks instead of reading entirely into memory
+            await _stream_to_disk(upload, tmp_path, MAX_UPLOAD_BYTES)
             processed.append(safe_name)
 
         result = ingest(tmp_dir)
-        invalidate_store()
 
         if result.chunk_count == 0:
             detail = "No documents could be ingested."
@@ -138,7 +136,7 @@ async def ingest_documents(files: List[UploadFile] = File(...)):
 @app.post("/query", response_model=QueryResponse)
 async def query_documents(body: QueryRequest):
     try:
-        store = get_store()
+        store = init_qdrant_store()
         chain = get_rag_chain(store=store, k=body.k, lang=body.lang)
         answer = chain.invoke(body.question)
         return QueryResponse(answer=answer, question=body.question)
@@ -155,7 +153,6 @@ async def query_documents(body: QueryRequest):
 async def reset_vectorstore():
     try:
         reset_store()
-        invalidate_store()
         return ResetResponse(message="Vectorstore has been reset successfully.")
     except Exception:
         logger.exception("Reset failed")

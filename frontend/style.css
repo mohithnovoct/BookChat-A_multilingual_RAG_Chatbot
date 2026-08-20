@@ -26,7 +26,7 @@
   --radius-sm:   6px;
   --shadow:      0 2px 12px rgba(0,0,0,.35);
   --transition:  .2s ease;
-  --font:        'Inter', 'Noto Sans Kannada', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font:        'Inter', 'Noto Sans Kannada', 'Noto Sans Gurmukhi', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 html {

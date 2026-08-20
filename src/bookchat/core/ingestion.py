@@ -1,16 +1,25 @@
 import logging
 import os
 import shutil
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Tuple, Set
+from typing import List, Set, Tuple
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, Filter, FieldCondition, MatchValue, FilterSelector
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    FilterSelector,
+    MatchValue,
+    PayloadSchemaType,
+    VectorParams,
+)
 
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
@@ -19,13 +28,16 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 import unicodedata
 import pytesseract
-from pdf2image import convert_from_path
+from pdf2image import convert_from_path, pdfinfo_from_path
 
 from bookchat.config import (
     ALLOWED_SUFFIXES,
-    CHROMA_DIR,
+    CHUNK_OVERLAP,
+    CHUNK_SIZE,
     EMBEDDING_MODEL,
+    OCR_LANGUAGES,
     POPPLER_PATH,
+    QDRANT_PATH,
     TESSERACT_CMD,
 )
 
@@ -40,20 +52,48 @@ class IngestResult:
     files_replaced: List[str] = field(default_factory=list)
 
 
-embeddings = HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL,
-        encode_kwargs={"batch_size": 64},
-    )
+# ──────── Lazy singletons ────────
 
+_embeddings: HuggingFaceEmbeddings | None = None
+_embeddings_lock = threading.Lock()
+
+
+def _get_embeddings() -> HuggingFaceEmbeddings:
+    """Lazy-loads the embedding model on first use to avoid blocking server startup."""
+    global _embeddings
+    with _embeddings_lock:
+        if _embeddings is None:
+            logger.info("Loading embedding model '%s'...", EMBEDDING_MODEL)
+            _embeddings = HuggingFaceEmbeddings(
+                model_name=EMBEDDING_MODEL,
+                encode_kwargs={"batch_size": 64},
+            )
+            logger.info("Embedding model loaded.")
+        return _embeddings
+
+
+_qdrant_client: QdrantClient | None = None
+_qdrant_lock = threading.Lock()
+
+
+def _get_client() -> QdrantClient:
+    """Returns a shared Qdrant client, creating it on first call."""
+    global _qdrant_client
+    with _qdrant_lock:
+        if _qdrant_client is None:
+            _qdrant_client = QdrantClient(path=QDRANT_PATH, timeout=60)
+        return _qdrant_client
 
 
 if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 
+# ──────── OCR helpers ────────
+
 def _ocr_page(args: tuple[int, Any]) -> Document | None:
     page_idx, image = args
-    text = pytesseract.image_to_string(image, lang="kan+eng")
+    text = pytesseract.image_to_string(image, lang=OCR_LANGUAGES)
     if text.strip():
         return Document(
             page_content=text,
@@ -63,25 +103,48 @@ def _ocr_page(args: tuple[int, Any]) -> Document | None:
 
 
 def _ocr_pdf(file_path: str) -> List[Document]:
-    logger.info("Performing parallel OCR on '%s' using Tesseract (kan+eng)...", file_path)
-    kwargs = {"dpi": 150}
+    """Performs batched parallel OCR to avoid loading all pages into memory at once."""
+    logger.info("Performing batched OCR on '%s' using Tesseract (%s)...", file_path, OCR_LANGUAGES)
+
+    OCR_BATCH_SIZE = 10
+    poppler_kwargs: dict[str, Any] = {}
     if POPPLER_PATH:
-        kwargs["poppler_path"] = POPPLER_PATH
+        poppler_kwargs["poppler_path"] = POPPLER_PATH
 
-    images = convert_from_path(file_path, **kwargs)
+    # Get total page count without loading images
+    info = pdfinfo_from_path(file_path, **poppler_kwargs)
+    total_pages = info["Pages"]
+
     documents: List[Document] = []
-
     max_workers = min(os.cpu_count() or 4, 8)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = list(executor.map(_ocr_page, enumerate(images)))
 
-    for result in results:
-        if result:
-            result.metadata["source"] = file_path
-            documents.append(result)
+    for batch_start in range(1, total_pages + 1, OCR_BATCH_SIZE):
+        batch_end = min(batch_start + OCR_BATCH_SIZE - 1, total_pages)
+        images = convert_from_path(
+            file_path,
+            first_page=batch_start,
+            last_page=batch_end,
+            dpi=150,
+            **poppler_kwargs,
+        )
+
+        page_args = [(batch_start - 1 + i, img) for i, img in enumerate(images)]
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(executor.map(_ocr_page, page_args))
+
+        for result in results:
+            if result:
+                result.metadata["source"] = file_path
+                documents.append(result)
+
+        # Explicitly free image memory before loading next batch
+        del images
 
     return documents
 
+
+# ──────── Document loading ────────
 
 def _normalize_docs(docs: List[Document]) -> List[Document]:
     for doc in docs:
@@ -162,7 +225,13 @@ def load_documents(path: str) -> tuple[List[Document], List[str]]:
     raise ValueError(f"Invalid path type: {path}")
 
 
-def get_chunks(documents: List[Document], chunk_size: int = 512, chunk_overlap: int = 128) -> List[Document]:
+# ──────── Chunking ────────
+
+def get_chunks(
+    documents: List[Document],
+    chunk_size: int = CHUNK_SIZE,
+    chunk_overlap: int = CHUNK_OVERLAP,
+) -> List[Document]:
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
@@ -175,7 +244,7 @@ def get_chunks(documents: List[Document], chunk_size: int = 512, chunk_overlap: 
     per_file_chunk_id: dict[str, int] = {}
     for chunk in chunks:
         source_path = chunk.metadata.get("source", "")
-        filename = os.path.basename(source_path) if source_path else "unknown"
+        filename = os.path.basename(source_path) if source_path else "junknown"
         chunk.metadata["filename"] = filename
         chunk_index = per_file_chunk_id.get(filename, 0)
         chunk.metadata["chunk_id"] = chunk_index
@@ -184,9 +253,11 @@ def get_chunks(documents: List[Document], chunk_size: int = 512, chunk_overlap: 
     return chunks
 
 
+# ──────── Qdrant store ────────
+
 def init_qdrant_store() -> QdrantVectorStore:
-    """Initializes Qdrant Client with optimized collection configs."""
-    client = QdrantClient(path="./local_qdrant_db", timeout=60)
+    """Initializes Qdrant collection with optimized config and payload indexes."""
+    client = _get_client()
     
     if not client.collection_exists(collection_name="test"):
         client.create_collection(
@@ -196,43 +267,40 @@ def init_qdrant_store() -> QdrantVectorStore:
                 distance=Distance.COSINE
             )
         )
+        # Create payload index for fast filtered deletes/lookups by filename
+        client.create_payload_index(
+            collection_name="test",
+            field_name="metadata.filename",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        logger.info("Created Qdrant collection 'test' with payload index on metadata.filename")
     
     return QdrantVectorStore(
         client=client,
         collection_name="test",
-        embedding=embeddings
+        embedding=_get_embeddings(),
     )
 
 
-def reset_store(db_path: str = "./local_qdrant_db") -> None:
-    """Removes the entire local Qdrant directory tree safely."""
-    directory = Path(db_path)
+def reset_store() -> None:
+    """Removes the entire local Qdrant directory tree and resets the shared client."""
+    global _qdrant_client
+    with _qdrant_lock:
+        _qdrant_client = None
+
+    directory = Path(QDRANT_PATH)
     if directory.exists():
         shutil.rmtree(directory)
         logger.info("Reset local Qdrant vectorstore directory at '%s'", directory)
 
 
-def _filenames_from_chunks(chunks: List[Document]) -> set[str]:
-    return {
-        filename
-        for chunk in chunks
-        if (filename := chunk.metadata.get("filename"))
-    }
-
-
-def _filename_exists(store: QdrantVectorStore, filename: str) -> bool:
-    results = store._collection.get(where={"filename": filename}, limit=1)
-    return bool(results.get("ids"))
-
-
 def delete_by_filenames(store: QdrantVectorStore, filenames: Set[str]) -> List[str]:
-    """Uses Qdrant's fast single-stage filtering engine to erase entries instantly."""
+    """Deletes entries by filename, only reporting filenames that actually had data."""
     replaced: List[str] = []
     if not filenames:
         return replaced
 
     for filename in sorted(filenames):
-        # Instead of searching if it exists first, Qdrant allows a safe conditional delete sweep
         try:
             filter_condition = Filter(
                 must=[
@@ -242,12 +310,22 @@ def delete_by_filenames(store: QdrantVectorStore, filenames: Set[str]) -> List[s
                     )
                 ]
             )
+
+            # Check if any points actually exist for this filename
+            scroll_result = store.client.scroll(
+                collection_name=store.collection_name,
+                scroll_filter=filter_condition,
+                limit=1,
+            )
+            if not scroll_result[0]:
+                continue
+
             store.client.delete(
                 collection_name=store.collection_name,
                 points_selector=FilterSelector(filter=filter_condition)
             )
             replaced.append(filename)
-            logger.info("Executed flush sweep for tracking context: '%s'", filename)
+            logger.info("Replaced existing data for '%s'", filename)
         except Exception as e:
             logger.error("Failed to delete records for %s: %s", filename, e)
             
@@ -270,7 +348,7 @@ def build_index(store: QdrantVectorStore, chunks: List[Document]) -> Tuple[Qdran
 
 
 def ingest(docs_path: str) -> IngestResult:
-    """Refactored main orchestrator using low-latency components."""
+    """Main orchestrator: load → chunk → index."""
     store = init_qdrant_store()
 
     docs, warnings = load_documents(docs_path)

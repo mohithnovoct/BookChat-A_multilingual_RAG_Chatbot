@@ -7,10 +7,15 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
-CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", BASE_DIR / "chroma"))
+QDRANT_PATH = os.environ.get("QDRANT_PATH", "./local_qdrant_db")
 EMBEDDING_MODEL = os.environ.get(
     "EMBEDDING_MODEL", "BAAI/bge-m3"
 )
+
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 1200))
+CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", 200))
+
+OCR_LANGUAGES = os.environ.get("OCR_LANGUAGES", "kan+pan+eng")
 
 TESSERACT_CMD = os.environ.get(
     "TESSERACT_CMD",

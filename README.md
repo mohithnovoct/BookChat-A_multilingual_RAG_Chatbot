@@ -1,6 +1,6 @@
 # BookChat
 
-RAG API for ingesting books and documents (PDF, TXT, MD) and asking questions about them.
+Multilingual RAG API and UI for ingesting books and documents (PDF, TXT, MD) and chatting with them in **English**, **Kannada (ಕನ್ನಡ)**, and **Punjabi (ਪੰਜਾਬੀ)** with Tesseract OCR support.
 
 ## Setup
 
@@ -46,7 +46,7 @@ uv run python -m bookchat.core.generate
 |--------|------|-------------|
 | GET | `/health` | Health check |
 | POST | `/ingest` | Upload PDF/TXT/MD files |
-| POST | `/query` | Ask a question (`question`, optional `k`) |
+| POST | `/query` | Ask a question (`question`, optional `k`, `lang`) |
 | DELETE | `/reset` | Clear the vector store |
 
 ### Example
@@ -57,7 +57,7 @@ curl -X POST "http://localhost:8000/ingest" \
 
 curl -X POST "http://localhost:8000/query" \
   -H "Content-Type: application/json" \
-  -d '{"question": "What is the main theme?", "k": 4}'
+  -d '{"question": "What is the main theme?", "k": 4, "lang": "en"}'
 ```
 
 ## Configuration
@@ -65,12 +65,15 @@ curl -X POST "http://localhost:8000/query" \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HF_TOKEN` | — | Hugging Face API token (required for queries) |
-| `CHROMA_DIR` | `./chroma` | Vector store directory |
-| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model |
-| `MAX_UPLOAD_BYTES` | `52428800` (50 MB) | Max upload size per file |
+| `QDRANT_PATH` | `./local_qdrant_db` | Local Qdrant vector store directory |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding model |
+| `CHUNK_SIZE` | `1200` | Characters per chunk for text splitting |
+| `CHUNK_OVERLAP` | `200` | Overlap between consecutive chunks |
+| `OCR_LANGUAGES` | `kan+pan+eng` | Tesseract OCR language packs |
+| `MAX_UPLOAD_BYTES` | `524288000` (500 MB) | Max upload size per file |
 
 ## Notes
 
-- The `chroma/` directory stores the local vector database and is gitignored.
+- The `local_qdrant_db/` directory stores the local Qdrant vector database and is gitignored.
 - Re-ingesting a file with the same name replaces its existing chunks (upsert by filename).
 - The `/reset` endpoint is unauthenticated — do not expose it publicly without adding auth.
