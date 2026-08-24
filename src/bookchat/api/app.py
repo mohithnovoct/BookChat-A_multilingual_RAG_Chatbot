@@ -18,6 +18,11 @@ from bookchat.config import ALLOWED_SUFFIXES, MAX_UPLOAD_BYTES
 from bookchat.core.generate import get_rag_chain
 from bookchat.core.ingestion import ingest, init_qdrant_store, reset_store
 
+# Configure global application logging to show progress in standard output
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="BookChat")

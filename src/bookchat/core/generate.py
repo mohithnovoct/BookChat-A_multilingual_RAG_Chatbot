@@ -1,18 +1,24 @@
+import logging
 import os
 import threading
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Optional
 
-from langchain_qdrant import QdrantVectorStore
-from langchain_core.documents import Document
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableLambda, RunnablePassthrough
-from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
+from huggingface_hub import InferenceClient
+from llama_index.core import PromptTemplate, VectorStoreIndex
+from llama_index.core.llms import CompletionResponse, CompletionResponseGen, CustomLLM, LLMMetadata
+from llama_index.core.prompts.prompt_type import PromptType
+from llama_index.vector_stores.qdrant import QdrantVectorStore
+from pydantic import PrivateAttr
 
 from bookchat.config import require_hf_token
-from bookchat.core.ingestion import init_qdrant_store
+from bookchat.core.ingestion import _get_embeddings, init_qdrant_store
 
+# Configure global application logging to show progress in standard output
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 
 _LANG_INSTRUCTIONS: dict[str, str] = {
     "en": "You MUST respond in English only.",
@@ -21,7 +27,11 @@ _LANG_INSTRUCTIONS: dict[str, str] = {
 }
 _DEFAULT_LANG = "en"
 
-DEFAULT_SYSTEM_PROMPT = """You are a helpful multilingual assistant with support for Kannada (ಕನ್ನಡ), Punjabi (ਪੰਜਾਬੀ), and English. Answer the user's question accurately using only the provided context. Every answer must explicitly name the source book where the information was found. If the context does not contain the answer, say 'Information not found in the source documents.' (in Kannada: 'ಮೂಲ ದಾಖಲೆಗಳಲ್ಲಿ ಮಾಹಿತಿ ಕಂಡುಬಂದಿಲ್ಲ.', in Punjabi: 'ਸਰੋਤ ਦਸਤਾਵੇਜ਼ਾਂ ਵਿੱਚ ਜਾਣਕਾਰੀ ਨਹੀਂ ਮਿਲੀ।')."""
+DEFAULT_SYSTEM_PROMPT = """You are a helpful multilingual assistant with support for Kannada (ಕನ್ನಡ), Punjabi (ਪੰਜਾਬੀ), and English. 
+                        Answer the user's question accurately using only the provided context. 
+                        Every answer must explicitly name the source book where the information was found excluding the page number and chunk_id. 
+                        If the context does not contain the answer, say 'Information not found in the source documents.' 
+                        (in Kannada: 'ಮೂಲ ದಾಖಲೆಗಳಲ್ಲಿ ಮಾಹಿತಿ ಕಂಡುಬಂದಿಲ್ಲ.', in Punjabi: 'ਸਰੋਤ ਦਸਤਾਵੇਜ਼ਾਂ ਵਿੱਚ ਜਾਣਕਾਰੀ ਨਹੀਂ ਮਿਲੀ।')."""
 
 
 def build_system_prompt(lang: str = _DEFAULT_LANG) -> str:
@@ -32,46 +42,120 @@ def build_system_prompt(lang: str = _DEFAULT_LANG) -> str:
 @dataclass
 class ModelParams:
     name: str = "meta-llama/Llama-3.1-8B-Instruct"
-    task: str = "text-generation"
     max_new_tokens: int = 800
     temperature: float = 0.3
-    repetition_penalty: float = 1.15
+
+
+
+class HuggingFaceInferenceLLM(CustomLLM):
+    model_name: str = "meta-llama/Llama-3.1-8B-Instruct"
+    token: str = ""
+    max_new_tokens: int = 800
+    temperature: float = 0.3
+    _client: Any = PrivateAttr()
+
+    def __init__(self, **kwargs: Any):
+        super().__init__(**kwargs)
+        self._client = InferenceClient(model=self.model_name, token=self.token)
+
+    @property
+    def metadata(self) -> LLMMetadata:
+        return LLMMetadata(model_name=self.model_name)
+
+    def complete(self, prompt: str, **kwargs: Any) -> CompletionResponse:
+        # Wrap the raw string prompt into a chat structure
+        messages = [{"role": "user", "content": prompt}]
+        
+        res = self._client.chat_completion(
+            messages=messages,
+            max_tokens=self.max_new_tokens,
+            temperature=self.temperature,
+        )
+        # Extract text from the chat response object
+        response_text = res.choices[0].message.content
+        return CompletionResponse(text=response_text)
+
+    def stream_complete(self, prompt: str, **kwargs: Any) -> CompletionResponseGen:
+        messages = [{"role": "user", "content": prompt}]
+        response = ""
+        
+        # Switch from text_generation to chat_completion for streaming
+        stream = self._client.chat_completion(
+            messages=messages,
+            max_tokens=self.max_new_tokens,
+            temperature=self.temperature,
+            stream=True
+        )
+        
+        for chunk in stream:
+            token = chunk.choices[0].delta.content
+            if token: # Filter out empty or None tokens
+                response += token
+                yield CompletionResponse(text=response, delta=token)
+
 
 
 # ──────── Cached LLM singleton ────────
 
-_llm: ChatHuggingFace | None = None
+_llm: HuggingFaceInferenceLLM | None = None
 _llm_lock = threading.Lock()
 
 
-def _get_llm() -> ChatHuggingFace:
-    """Returns a cached ChatHuggingFace instance, creating it on first call."""
+def _get_llm() -> HuggingFaceInferenceLLM:
+    """Returns a cached HuggingFaceInferenceLLM instance, creating it on first call."""
     global _llm
     with _llm_lock:
         if _llm is None:
             params = ModelParams()
-            llm_endpoint = HuggingFaceEndpoint(
-                repo_id=params.name,
-                task=params.task,
-                max_new_tokens=params.max_new_tokens,
+            token = require_hf_token()
+            _llm = HuggingFaceInferenceLLM(
+                model_name=params.name,
+                token=token,
                 temperature=params.temperature,
-                huggingfacehub_api_token=require_hf_token(),
-                repetition_penalty=params.repetition_penalty,
+                max_new_tokens=params.max_new_tokens,
             )
-            _llm = ChatHuggingFace(llm=llm_endpoint)
         return _llm
 
 
-def format_metadata(docs: List[Document]) -> str:
-    formatted_chunks = []
+def get_query_engine(
+    store: Optional[QdrantVectorStore] = None,
+    k: int = 4,
+    lang: str = _DEFAULT_LANG,
+):
+    if store is None:
+        store = init_qdrant_store()
 
-    for doc in docs:
-        source = doc.metadata.get("filename") or os.path.basename(
-            doc.metadata.get("source", "Unknown")
-        )
-        header = f"[Source: {source}]"
-        formatted_chunks.append(f"{header}\n{doc.page_content}")
-    return "\n\n".join(formatted_chunks)
+    embed_model = _get_embeddings()
+    index = VectorStoreIndex.from_vector_store(
+        vector_store=store,
+        embed_model=embed_model,
+    )
+
+    system_prompt = build_system_prompt(lang)
+
+    qa_template = PromptTemplate(
+        template=(
+            f"{system_prompt}\n\n"
+            "Context information is below.\n"
+            "---------------------\n"
+            "{context_str}\n"
+            "---------------------\n"
+            "Given the context information and not prior knowledge, answer the query.\n"
+            "Query: {query_str}\n"
+            "Answer: "
+        ),
+        prompt_type=PromptType.QUESTION_ANSWER,
+    )
+
+    llm = _get_llm()
+
+    query_engine = index.as_query_engine(
+        llm=llm,
+        similarity_top_k=k,
+        text_qa_template=qa_template,
+    )
+
+    return query_engine
 
 
 def get_rag_chain(
@@ -80,38 +164,18 @@ def get_rag_chain(
     k: int = 4,
     lang: str = _DEFAULT_LANG,
 ):
-    if store is None:
-        store = init_qdrant_store()
+    """Backwards-compatible wrapper returning a runnable with an .invoke(query) interface."""
+    query_engine = get_query_engine(store=store, k=k, lang=lang)
 
-    # Use MMR to retrieve diverse chunks instead of near-duplicates
-    retriever = store.as_retriever(
-        search_type="mmr",
-        search_kwargs={"k": k, "fetch_k": k * 3, "lambda_mult": 0.7},
-    )
+    class RAGWrapper:
+        def __init__(self, engine):
+            self.engine = engine
 
-    # Use ChatPromptTemplate so ChatHuggingFace can apply the Llama chat template
-    # with proper system/human message roles
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "{system_prompt}"),
-        ("human", "Context:\n{context}\n\nQuestion: {query}"),
-    ])
+        def invoke(self, query: str) -> str:
+            response = self.engine.query(query)
+            return str(response)
 
-    llm = _get_llm()
-
-    resolved_prompt = build_system_prompt(lang)
-
-    chain = (
-        {
-            "context": retriever | RunnableLambda(format_metadata),
-            "query": RunnablePassthrough(),
-            "system_prompt": lambda _: resolved_prompt,
-        }
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-
-    return chain
+    return RAGWrapper(query_engine)
 
 
 if __name__ == "__main__":
