@@ -1,17 +1,20 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 import logging
 import os
+from pathlib import Path
+import re
 import shutil
 import threading
 import unicodedata
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, List, Set, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from llama_index.core import Document
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.qdrant import QdrantVectorStore
+from pdf2image import convert_from_path, pdfinfo_from_path
+from pypdf import PdfReader
+import pytesseract
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -22,10 +25,6 @@ from qdrant_client.models import (
     PayloadSchemaType,
     VectorParams,
 )
-
-import pytesseract
-from pdf2image import convert_from_path, pdfinfo_from_path
-from pypdf import PdfReader
 
 from bookchat.config import (
     ALLOWED_SUFFIXES,
@@ -45,8 +44,8 @@ logger = logging.getLogger(__name__)
 class IngestResult:
     document_count: int
     chunk_count: int
-    warnings: List[str] = field(default_factory=list)
-    files_replaced: List[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    files_replaced: list[str] = field(default_factory=list)
 
 
 # ──────── Lazy singletons ────────
@@ -86,11 +85,50 @@ if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 
+def _clean_multilingual_text(text: str) -> str:
+    """Normalizes Unicode (NFC) and handles sentence boundaries across English, Punjabi, and Kannada."""
+    if not text:
+        return ""
+
+    # 1. Standard Unicode Normalization (NFC)
+    text = unicodedata.normalize("NFC", text)
+
+    # 2. Fix spacing around Gurmukhi/Kannada/English sentence delimiters (., !, ?, ।, ॥)
+    text = re.sub(r"\s*([।॥\.\!\?])\s*", r"\1 ", text)
+
+    # 3. Collapse multiple whitespace while retaining paragraphs
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text.strip()
+
+
+def _is_valid_multilingual_content(text: str) -> bool:
+    """
+    Validates content for English (Latin), Punjabi (Gurmukhi), and Kannada.
+    Unicode Ranges:
+    - English / Latin: U+0020 - U+007F
+    - Gurmukhi (Punjabi): U+0A00 - U+0A7F
+    - Kannada: U+0C80 - U+0CFF
+    """
+    if not text or len(text.strip()) < 30:
+        return False
+
+    # Matches Latin, Gurmukhi, and Kannada scripts
+    valid_script_chars = len(
+        re.findall(r"[\u0020-\u007F\u0A00-\u0A7F\u0C80-\u0CFF]", text)
+    )
+    total_chars = len(text.strip())
+
+    return (valid_script_chars / total_chars) > 0.50
+
+
 # ──────── OCR helpers ────────
+
 
 def _ocr_single_page(file_path: str, page_num: int, filename: str) -> Document | None:
     """Runs OCR on a single PDF page if text extraction yields minimal content."""
-    poppler_kwargs: dict[str, Any] = {}
+    poppler_kwargs: dict[str, any] = {}
     if POPPLER_PATH:
         poppler_kwargs["poppler_path"] = POPPLER_PATH
     try:
@@ -98,22 +136,31 @@ def _ocr_single_page(file_path: str, page_num: int, filename: str) -> Document |
             file_path,
             first_page=page_num,
             last_page=page_num,
-            dpi=120,
+            dpi=300,
             **poppler_kwargs,
         )
         if images:
-            text = pytesseract.image_to_string(images[0], lang=OCR_LANGUAGES)
+            custom_config = f"-l {OCR_LANGUAGES} --psm 3"
+            text = pytesseract.image_to_string(
+                images[0], lang=OCR_LANGUAGES, config=custom_config
+            )
             if text.strip():
                 return Document(
                     text=text,
-                    metadata={"source": file_path, "filename": filename, "page": page_num},
+                    metadata={
+                        "source": file_path,
+                        "filename": filename,
+                        "page": page_num,
+                    },
                 )
     except Exception as exc:
-        logger.warning("Single page OCR failed for page %d of '%s': %s", page_num, file_path, exc)
+        logger.warning(
+            "Single page OCR failed for page %d of '%s': %s", page_num, file_path, exc
+        )
     return None
 
 
-def _ocr_page(args: tuple[int, Any]) -> Document | None:
+def _ocr_page(args: tuple[int, any]) -> Document | None:
     page_idx, image = args
     text = pytesseract.image_to_string(image, lang=OCR_LANGUAGES)
     if text.strip():
@@ -124,19 +171,23 @@ def _ocr_page(args: tuple[int, Any]) -> Document | None:
     return None
 
 
-def _ocr_pdf(file_path: str) -> List[Document]:
+def _ocr_pdf(file_path: str) -> list[Document]:
     """Performs batched parallel OCR to avoid loading all pages into memory at once."""
-    logger.info("Performing batched OCR on '%s' using Tesseract (%s)...", file_path, OCR_LANGUAGES)
+    logger.info(
+        "Performing batched OCR on '%s' using Tesseract (%s)...",
+        file_path,
+        OCR_LANGUAGES,
+    )
 
     OCR_BATCH_SIZE = 10
-    poppler_kwargs: dict[str, Any] = {}
+    poppler_kwargs: dict[str, any] = {}
     if POPPLER_PATH:
         poppler_kwargs["poppler_path"] = POPPLER_PATH
 
     info = pdfinfo_from_path(file_path, **poppler_kwargs)
     total_pages = info["Pages"]
 
-    documents: List[Document] = []
+    documents: list[Document] = []
     max_workers = min(os.cpu_count() or 4, 8)
     filename = Path(file_path).name
 
@@ -146,7 +197,7 @@ def _ocr_pdf(file_path: str) -> List[Document]:
             file_path,
             first_page=batch_start,
             last_page=batch_end,
-            dpi=120,
+            dpi=300,
             **poppler_kwargs,
         )
 
@@ -168,7 +219,8 @@ def _ocr_pdf(file_path: str) -> List[Document]:
 
 # ──────── Document loading ────────
 
-def _normalize_docs(docs: List[Document]) -> List[Document]:
+
+def _normalize_docs(docs: list[Document]) -> list[Document]:
     for doc in docs:
         content = doc.get_content()
         if content:
@@ -176,7 +228,7 @@ def _normalize_docs(docs: List[Document]) -> List[Document]:
     return docs
 
 
-def _load_single_file(file_path: str) -> List[Document]:
+def _load_single_file(file_path: str) -> list[Document]:
     path = Path(file_path)
 
     if not path.exists():
@@ -184,7 +236,7 @@ def _load_single_file(file_path: str) -> List[Document]:
 
     ext = path.suffix.lower()
     filename = path.name
-    docs: List[Document] = []
+    docs: list[Document] = []
 
     if ext == ".pdf":
         logger.info("Loading PDF document: '%s'", filename)
@@ -193,24 +245,38 @@ def _load_single_file(file_path: str) -> List[Document]:
             total_pages = len(reader.pages)
             for i, page in enumerate(reader.pages):
                 text = (page.extract_text() or "").strip()
-                if len(text) >= 20:
+                if len(text) >= 150:
                     docs.append(
                         Document(
                             text=text,
-                            metadata={"source": file_path, "filename": filename, "page": i + 1},
+                            metadata={
+                                "source": file_path,
+                                "filename": filename,
+                                "page": i + 1,
+                            },
                         )
                     )
                 else:
-                    logger.info("Page %d of '%s' has minimal text; running single-page OCR fallback.", i + 1, filename)
-                    ocr_doc = _ocr_single_page(file_path, page_num=i + 1, filename=filename)
+                    logger.info(
+                        "Page %d of '%s' has minimal text; running single-page OCR fallback.",
+                        i + 1,
+                        filename,
+                    )
+                    ocr_doc = _ocr_single_page(
+                        file_path, page_num=i + 1, filename=filename
+                    )
                     if ocr_doc:
                         docs.append(ocr_doc)
 
             if not docs and total_pages > 0:
-                logger.info("Standard PDF extraction found no text across all pages; falling back to full OCR.")
+                logger.info(
+                    "Standard PDF extraction found no text across all pages; falling back to full OCR."
+                )
                 docs = _ocr_pdf(file_path)
         except Exception as exc:
-            logger.warning("Standard PDF load failed (%s); attempting full OCR fallback.", exc)
+            logger.warning(
+                "Standard PDF load failed (%s); attempting full OCR fallback.", exc
+            )
             docs = _ocr_pdf(file_path)
     elif ext in {".txt", ".md"}:
         logger.info("Loading text document: '%s'", filename)
@@ -230,13 +296,13 @@ def _load_single_file(file_path: str) -> List[Document]:
     return _normalize_docs(docs)
 
 
-def load_documents(path: str) -> tuple[List[Document], List[str]]:
+def load_documents(path: str) -> tuple[list[Document], list[str]]:
     target = Path(path)
     if not target.exists():
         raise FileNotFoundError(f"Path does not exist: {path}")
 
-    documents: List[Document] = []
-    warnings: List[str] = []
+    documents: list[Document] = []
+    warnings: list[str] = []
 
     if target.is_file():
         documents.extend(_load_single_file(str(target)))
@@ -252,7 +318,9 @@ def load_documents(path: str) -> tuple[List[Document], List[str]]:
 
         max_workers = min(os.cpu_count() or 4, 16)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_path = {executor.submit(_load_single_file, fp): fp for fp in file_paths}
+            future_to_path = {
+                executor.submit(_load_single_file, fp): fp for fp in file_paths
+            }
 
             for future in as_completed(future_to_path):
                 fp = future_to_path[future]
@@ -271,14 +339,22 @@ def load_documents(path: str) -> tuple[List[Document], List[str]]:
 
 # ──────── Chunking ────────
 
+
 def get_chunks(
-    documents: List[Document],
+    documents: list[Document],
     chunk_size: int = CHUNK_SIZE,
     chunk_overlap: int = CHUNK_OVERLAP,
-) -> List[Any]:
+) -> list[any]:
     splitter = SentenceSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+    )
+
+    splitter = SentenceSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        paragraph_separator="\n\n",
+        secondary_chunking_regex=r"[^।॥\.\!\?]+[।॥\.\!\?]",
     )
 
     nodes = splitter.get_nodes_from_documents(documents)
@@ -286,7 +362,9 @@ def get_chunks(
     per_file_chunk_id: dict[str, int] = {}
     for node in nodes:
         source_path = node.metadata.get("source", "")
-        filename = node.metadata.get("filename") or (os.path.basename(source_path) if source_path else "unknown")
+        filename = node.metadata.get("filename") or (
+            os.path.basename(source_path) if source_path else "unknown"
+        )
         node.metadata["filename"] = filename
         chunk_index = per_file_chunk_id.get(filename, 0)
         node.metadata["chunk_id"] = chunk_index
@@ -296,6 +374,7 @@ def get_chunks(
 
 
 # ──────── Qdrant store ────────
+
 
 def init_qdrant_store() -> QdrantVectorStore:
     """Initializes Qdrant collection with payload indexes for LlamaIndex."""
@@ -339,9 +418,9 @@ def reset_store() -> None:
         logger.info("Reset local Qdrant vectorstore directory at '%s'", directory)
 
 
-def delete_by_filenames(store: QdrantVectorStore, filenames: Set[str]) -> List[str]:
+def delete_by_filenames(store: QdrantVectorStore, filenames: set[str]) -> list[str]:
     """Deletes entries by filename, only reporting filenames that actually had data."""
-    replaced: List[str] = []
+    replaced: list[str] = []
     if not filenames:
         return replaced
 
@@ -351,7 +430,9 @@ def delete_by_filenames(store: QdrantVectorStore, filenames: Set[str]) -> List[s
             filter_condition = Filter(
                 should=[
                     FieldCondition(key="filename", match=MatchValue(value=filename)),
-                    FieldCondition(key="metadata.filename", match=MatchValue(value=filename)),
+                    FieldCondition(
+                        key="metadata.filename", match=MatchValue(value=filename)
+                    ),
                 ]
             )
 
@@ -375,9 +456,13 @@ def delete_by_filenames(store: QdrantVectorStore, filenames: Set[str]) -> List[s
     return replaced
 
 
-def build_index(store: QdrantVectorStore, nodes: List[Any]) -> Tuple[QdrantVectorStore, List[str]]:
+def build_index(
+    store: QdrantVectorStore, nodes: list[any]
+) -> tuple[QdrantVectorStore, list[str]]:
     """Batches document node additions to Qdrant vector store."""
-    filenames = {node.metadata.get("filename") for node in nodes if node.metadata.get("filename")}
+    filenames = {
+        node.metadata.get("filename") for node in nodes if node.metadata.get("filename")
+    }
     replaced = delete_by_filenames(store, filenames)
 
     if nodes:
@@ -392,13 +477,22 @@ def build_index(store: QdrantVectorStore, nodes: List[Any]) -> Tuple[QdrantVecto
             embeddings = embed_model.get_text_embedding_batch(batch_texts)
             for node, emb in zip(batch_nodes, embeddings):
                 node.embedding = emb
-            logger.info("Embedded chunks %d to %d of %d", i + 1, min(i + batch_size, len(nodes)), len(nodes))
+            logger.info(
+                "Embedded chunks %d to %d of %d",
+                i + 1,
+                min(i + batch_size, len(nodes)),
+                len(nodes),
+            )
 
         logger.info("Indexing %d chunks into Qdrant vector store...", len(nodes))
         add_batch_size = 256
         for i in range(0, len(nodes), add_batch_size):
             store.add(nodes[i : i + add_batch_size])
-            logger.info("Indexed chunks %d to %d into Qdrant", i + 1, min(i + add_batch_size, len(nodes)))
+            logger.info(
+                "Indexed chunks %d to %d into Qdrant",
+                i + 1,
+                min(i + add_batch_size, len(nodes)),
+            )
 
     return store, replaced
 
@@ -419,4 +513,3 @@ def ingest(docs_path: str) -> IngestResult:
         warnings=warnings,
         files_replaced=replaced,
     )
-

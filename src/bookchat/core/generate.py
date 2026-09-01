@@ -6,7 +6,12 @@ from typing import Any, Optional
 
 from huggingface_hub import InferenceClient
 from llama_index.core import PromptTemplate, VectorStoreIndex
-from llama_index.core.llms import CompletionResponse, CompletionResponseGen, CustomLLM, LLMMetadata
+from llama_index.core.llms import (
+    CompletionResponse,
+    CompletionResponseGen,
+    CustomLLM,
+    LLMMetadata,
+)
 from llama_index.core.prompts.prompt_type import PromptType
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from pydantic import PrivateAttr
@@ -16,8 +21,7 @@ from bookchat.core.ingestion import _get_embeddings, init_qdrant_store
 
 # Configure global application logging to show progress in standard output
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 
 _LANG_INSTRUCTIONS: dict[str, str] = {
@@ -27,11 +31,17 @@ _LANG_INSTRUCTIONS: dict[str, str] = {
 }
 _DEFAULT_LANG = "en"
 
-DEFAULT_SYSTEM_PROMPT = """You are a helpful multilingual assistant with support for Kannada (ಕನ್ನಡ), Punjabi (ਪੰਜਾਬੀ), and English. 
-                        Answer the user's question accurately using only the provided context. 
-                        Every answer must explicitly name the source book where the information was found excluding the page number and chunk_id. 
-                        If the context does not contain the answer, say 'Information not found in the source documents.' 
-                        (in Kannada: 'ಮೂಲ ದಾಖಲೆಗಳಲ್ಲಿ ಮಾಹಿತಿ ಕಂಡುಬಂದಿಲ್ಲ.', in Punjabi: 'ਸਰੋਤ ਦਸਤਾਵੇਜ਼ਾਂ ਵਿੱਚ ਜਾਣਕਾਰੀ ਨਹੀਂ ਮਿਲੀ।')."""
+DEFAULT_SYSTEM_PROMPT = """You are a strict Retrieval-Augmented Generation (RAG) assistant. 
+Your ONLY task is to answer the query in the exact same language it was asked, using ONLY the provided text context.
+
+CRITICAL RULES:
+1. CONTEXT ISOLATION: Rely strictly on the facts directly mentioned in the context. Do NOT use your pre-trained external historical knowledge, assumptions, or later chronological events. If a fact is not explicitly in the context, treat it as entirely untrue.
+2. CITATION REQUIREMENT: You must explicitly mention the source book name (e.g., 'ਸਾਚੀ ਸਾਖੀ') at the beginning or end of your answer. Do NOT include page numbers or chunk IDs.
+3. NO HALLUCINATION / FALLBACK: If the provided context does not contain the definitive answer to the question, you must output exactly this phrase and nothing else:
+   - In Punjabi: 'ਸਰੋਤ ਦਸਤਾਵੇਜ਼ਾਂ ਵਿੱਚ ਜਾਣਕਾਰੀ ਨਹੀਂ ਮਿਲੀ।'
+   - In English: 'Information not found in the source documents.'
+   - In Kannada: 'ಮೂಲ ದಾಖಲೆಗಳಲ್ಲಿ ಮಾಹಿತಿ ಕಂಡುಬಂದಿಲ್ಲ.'
+4. OUTPUT FORMATTING: Be concise. Write in complete, grammatically correct sentences. If making a list, ensure each point introduces completely unique information without repeating words or concepts from previous points."""
 
 
 def build_system_prompt(lang: str = _DEFAULT_LANG) -> str:
@@ -42,16 +52,18 @@ def build_system_prompt(lang: str = _DEFAULT_LANG) -> str:
 @dataclass
 class ModelParams:
     name: str = "meta-llama/Llama-3.1-8B-Instruct"
-    max_new_tokens: int = 800
-    temperature: float = 0.3
-
+    max_new_tokens: int = 1500
+    temperature: float = 0.0
+    repetition_penalty: float = 1.20
 
 
 class HuggingFaceInferenceLLM(CustomLLM):
     model_name: str = "meta-llama/Llama-3.1-8B-Instruct"
     token: str = ""
-    max_new_tokens: int = 800
-    temperature: float = 0.3
+    max_new_tokens: int = 1500
+    temperature: float = 0.0
+    repetition_penalty: float = 1.20
+    system_prompt: str = ""
     _client: Any = PrivateAttr()
 
     def __init__(self, **kwargs: Any):
@@ -64,12 +76,16 @@ class HuggingFaceInferenceLLM(CustomLLM):
 
     def complete(self, prompt: str, **kwargs: Any) -> CompletionResponse:
         # Wrap the raw string prompt into a chat structure
-        messages = [{"role": "user", "content": prompt}]
-        
+        messages = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
         res = self._client.chat_completion(
             messages=messages,
             max_tokens=self.max_new_tokens,
             temperature=self.temperature,
+            repetition_penalty=self.repetition_penalty,
         )
         # Extract text from the chat response object
         response_text = res.choices[0].message.content
@@ -78,21 +94,20 @@ class HuggingFaceInferenceLLM(CustomLLM):
     def stream_complete(self, prompt: str, **kwargs: Any) -> CompletionResponseGen:
         messages = [{"role": "user", "content": prompt}]
         response = ""
-        
+
         # Switch from text_generation to chat_completion for streaming
         stream = self._client.chat_completion(
             messages=messages,
             max_tokens=self.max_new_tokens,
             temperature=self.temperature,
-            stream=True
+            stream=True,
         )
-        
+
         for chunk in stream:
             token = chunk.choices[0].delta.content
-            if token: # Filter out empty or None tokens
+            if token:  # Filter out empty or None tokens
                 response += token
                 yield CompletionResponse(text=response, delta=token)
-
 
 
 # ──────── Cached LLM singleton ────────
@@ -113,13 +128,14 @@ def _get_llm() -> HuggingFaceInferenceLLM:
                 token=token,
                 temperature=params.temperature,
                 max_new_tokens=params.max_new_tokens,
+                repetition_penalty=params.repetition_penalty,
             )
         return _llm
 
 
 def get_query_engine(
     store: Optional[QdrantVectorStore] = None,
-    k: int = 4,
+    k: int = 8,
     lang: str = _DEFAULT_LANG,
 ):
     if store is None:
@@ -161,7 +177,7 @@ def get_query_engine(
 def get_rag_chain(
     store: Optional[QdrantVectorStore] = None,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
-    k: int = 4,
+    k: int = 8,
     lang: str = _DEFAULT_LANG,
 ):
     """Backwards-compatible wrapper returning a runnable with an .invoke(query) interface."""
