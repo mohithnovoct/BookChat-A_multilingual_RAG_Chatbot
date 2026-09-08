@@ -243,7 +243,12 @@ queryForm.addEventListener("submit", async (e) => {
     const res = await fetch(`${API_BASE}/query`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, k: 4, lang: currentLang }),
+      body: JSON.stringify({
+        question,
+        k: 4,
+        answer_language: "en",
+        query_language: "auto",
+      }),
     });
 
     const data = await res.json();
@@ -254,6 +259,7 @@ queryForm.addEventListener("submit", async (e) => {
     }
 
     appendBubble(data.answer, "assistant");
+    appendSources(data.sources);
   } catch (err) {
     removeTyping(typingEl);
     appendBubble(err.message, "error");
@@ -306,6 +312,27 @@ function appendBubble(text, type) {
   bubble.className = `chat-bubble ${type}`;
   bubble.textContent = text;
   chatMessages.appendChild(bubble);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function appendSources(sources) {
+  if (!Array.isArray(sources) || sources.length === 0) return;
+
+  const sourceList = document.createElement("div");
+  sourceList.className = "source-list";
+  sourceList.setAttribute("aria-label", "Sources");
+  sourceList.textContent = "Sources: ";
+
+  sources.forEach((source, index) => {
+    const sourceItem = document.createElement("span");
+    sourceItem.className = "source-item";
+    const page = source.page ? `, page ${source.page}` : "";
+    sourceItem.textContent = `${source.filename}${page}`;
+    sourceList.appendChild(sourceItem);
+    if (index < sources.length - 1) sourceList.appendChild(document.createTextNode(" · "));
+  });
+
+  chatMessages.appendChild(sourceList);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 

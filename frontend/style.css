@@ -318,6 +318,17 @@ body {
 .status-message.error   { color: var(--danger); }
 .status-message.loading { color: var(--accent); }
 
+.source-list {
+  color: var(--text-muted);
+  font-size: .72rem;
+  margin: -.45rem 0 .85rem;
+  padding-left: .35rem;
+}
+
+.source-item {
+  color: var(--accent);
+}
+
 /* ───────── Chat Panel ───────── */
 #chat-panel {
   height: calc(100vh - 52px);

@@ -12,11 +12,12 @@ from llama_index.core.llms import (
     CustomLLM,
     LLMMetadata,
 )
+from llama_index.core.postprocessor import SentenceTransformerRerank
 from llama_index.core.prompts.prompt_type import PromptType
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from pydantic import PrivateAttr
 
-from bookchat.config import require_hf_token
+from bookchat.config import RERANKER_CANDIDATE_K, RERANKER_MODEL, require_hf_token
 from bookchat.core.ingestion import _get_embeddings, init_qdrant_store
 
 # Configure global application logging to show progress in standard output
@@ -24,29 +25,35 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 
-_LANG_INSTRUCTIONS: dict[str, str] = {
-    "en": "You MUST respond in English only.",
-    "kn": "You MUST respond in Kannada (ಕನ್ನಡ) only.",
-    "pa": "You MUST respond in Punjabi (ਪੰਜਾਬੀ) in Gurmukhi script only.",
-}
-_DEFAULT_LANG = "en"
+_ENGLISH_INSTRUCTION = "You MUST respond in English only."
 
 DEFAULT_SYSTEM_PROMPT = """You are a strict Retrieval-Augmented Generation (RAG) assistant. 
-Your ONLY task is to answer the query in the exact same language it was asked, using ONLY the provided text context.
+Your ONLY task is to answer the query in English, using ONLY the provided text context. The context may contain English, Kannada, Punjabi, or a mixture of these languages.
 
 CRITICAL RULES:
 1. CONTEXT ISOLATION: Rely strictly on the facts directly mentioned in the context. Do NOT use your pre-trained external historical knowledge, assumptions, or later chronological events. If a fact is not explicitly in the context, treat it as entirely untrue.
-2. CITATION REQUIREMENT: You must explicitly mention the source book name (e.g., 'ਸਾਚੀ ਸਾਖੀ') at the beginning or end of your answer. Do NOT include page numbers or chunk IDs.
+2. CITATION REQUIREMENT: Mention the source book name when answering. Structured source references are returned separately by the application.
 3. NO HALLUCINATION / FALLBACK: If the provided context does not contain the definitive answer to the question, you must output exactly this phrase and nothing else:
-   - In Punjabi: 'ਸਰੋਤ ਦਸਤਾਵੇਜ਼ਾਂ ਵਿੱਚ ਜਾਣਕਾਰੀ ਨਹੀਂ ਮਿਲੀ।'
-   - In English: 'Information not found in the source documents.'
-   - In Kannada: 'ಮೂಲ ದಾಖಲೆಗಳಲ್ಲಿ ಮಾಹಿತಿ ಕಂಡುಬಂದಿಲ್ಲ.'
+   - 'Information not found in the source documents.'
 4. OUTPUT FORMATTING: Be concise. Write in complete, grammatically correct sentences. If making a list, ensure each point introduces completely unique information without repeating words or concepts from previous points."""
 
 
-def build_system_prompt(lang: str = _DEFAULT_LANG) -> str:
-    lang_instruction = _LANG_INSTRUCTIONS.get(lang, _LANG_INSTRUCTIONS[_DEFAULT_LANG])
-    return f"{lang_instruction}\n\n{DEFAULT_SYSTEM_PROMPT}"
+def build_system_prompt() -> str:
+    return f"{_ENGLISH_INSTRUCTION}\n\n{DEFAULT_SYSTEM_PROMPT}"
+
+
+@dataclass
+class SourceReference:
+    filename: str
+    page: int | None = None
+    chunk_id: int | None = None
+    score: float | None = None
+
+
+@dataclass
+class RAGResult:
+    answer: str
+    sources: list[SourceReference]
 
 
 @dataclass
@@ -54,7 +61,6 @@ class ModelParams:
     name: str = "meta-llama/Llama-3.1-8B-Instruct"
     max_new_tokens: int = 1500
     temperature: float = 0.0
-    repetition_penalty: float = 1.20
 
 
 class HuggingFaceInferenceLLM(CustomLLM):
@@ -62,7 +68,6 @@ class HuggingFaceInferenceLLM(CustomLLM):
     token: str = ""
     max_new_tokens: int = 1500
     temperature: float = 0.0
-    repetition_penalty: float = 1.20
     system_prompt: str = ""
     _client: Any = PrivateAttr()
 
@@ -85,17 +90,18 @@ class HuggingFaceInferenceLLM(CustomLLM):
             messages=messages,
             max_tokens=self.max_new_tokens,
             temperature=self.temperature,
-            repetition_penalty=self.repetition_penalty,
         )
-        # Extract text from the chat response object
+        
         response_text = res.choices[0].message.content
         return CompletionResponse(text=response_text)
 
     def stream_complete(self, prompt: str, **kwargs: Any) -> CompletionResponseGen:
-        messages = [{"role": "user", "content": prompt}]
+        messages = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        messages.append({"role": "user", "content": prompt})
         response = ""
 
-        # Switch from text_generation to chat_completion for streaming
         stream = self._client.chat_completion(
             messages=messages,
             max_tokens=self.max_new_tokens,
@@ -105,12 +111,11 @@ class HuggingFaceInferenceLLM(CustomLLM):
 
         for chunk in stream:
             token = chunk.choices[0].delta.content
-            if token:  # Filter out empty or None tokens
+            if token:
                 response += token
                 yield CompletionResponse(text=response, delta=token)
 
 
-# ──────── Cached LLM singleton ────────
 
 _llm: HuggingFaceInferenceLLM | None = None
 _llm_lock = threading.Lock()
@@ -128,7 +133,6 @@ def _get_llm() -> HuggingFaceInferenceLLM:
                 token=token,
                 temperature=params.temperature,
                 max_new_tokens=params.max_new_tokens,
-                repetition_penalty=params.repetition_penalty,
             )
         return _llm
 
@@ -136,7 +140,6 @@ def _get_llm() -> HuggingFaceInferenceLLM:
 def get_query_engine(
     store: Optional[QdrantVectorStore] = None,
     k: int = 8,
-    lang: str = _DEFAULT_LANG,
 ):
     if store is None:
         store = init_qdrant_store()
@@ -147,7 +150,7 @@ def get_query_engine(
         embed_model=embed_model,
     )
 
-    system_prompt = build_system_prompt(lang)
+    system_prompt = build_system_prompt()
 
     qa_template = PromptTemplate(
         template=(
@@ -164,10 +167,16 @@ def get_query_engine(
     )
 
     llm = _get_llm()
+    reranker = SentenceTransformerRerank(
+        model=RERANKER_MODEL,
+        top_n=k,
+        keep_retrieval_score=True,
+    )
 
     query_engine = index.as_query_engine(
         llm=llm,
-        similarity_top_k=k,
+        similarity_top_k=max(k, RERANKER_CANDIDATE_K),
+        node_postprocessors=[reranker],
         text_qa_template=qa_template,
     )
 
@@ -178,18 +187,31 @@ def get_rag_chain(
     store: Optional[QdrantVectorStore] = None,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     k: int = 8,
-    lang: str = _DEFAULT_LANG,
 ):
     """Backwards-compatible wrapper returning a runnable with an .invoke(query) interface."""
-    query_engine = get_query_engine(store=store, k=k, lang=lang)
+    query_engine = get_query_engine(store=store, k=k)
 
     class RAGWrapper:
         def __init__(self, engine):
             self.engine = engine
 
-        def invoke(self, query: str) -> str:
+        def invoke(self, query: str) -> RAGResult:
             response = self.engine.query(query)
-            return str(response)
+            sources: list[SourceReference] = []
+            seen: set[tuple[str, int | None, int | None]] = set()
+            for source_node in response.source_nodes:
+                metadata = source_node.node.metadata
+                source = SourceReference(
+                    filename=str(metadata.get("filename", "unknown")),
+                    page=metadata.get("page"),
+                    chunk_id=metadata.get("chunk_id"),
+                    score=source_node.score,
+                )
+                key = (source.filename, source.page, source.chunk_id)
+                if key not in seen:
+                    seen.add(key)
+                    sources.append(source)
+            return RAGResult(answer=str(response), sources=sources)
 
     return RAGWrapper(query_engine)
 
@@ -207,7 +229,7 @@ if __name__ == "__main__":
                 break
 
             print("\nAns: ")
-            print(rag_chain.invoke(query))
+            print(rag_chain.invoke(query).answer)
         except (KeyboardInterrupt, EOFError):
             print("\nExiting session.")
             break

@@ -11,9 +11,13 @@ QDRANT_PATH = os.environ.get("QDRANT_PATH", "./local_qdrant_db")
 EMBEDDING_MODEL = os.environ.get(
     "EMBEDDING_MODEL", "BAAI/bge-m3"
 )
+RERANKER_MODEL = os.environ.get(
+    "RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"
+)
+RERANKER_CANDIDATE_K = int(os.environ.get("RERANKER_CANDIDATE_K", 20))
 
-CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 1200))
-CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", 200))
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 2500))
+CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", 400))
 
 OCR_LANGUAGES = os.environ.get("OCR_LANGUAGES", "kan+pan+eng")
 

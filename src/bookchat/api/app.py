@@ -141,9 +141,13 @@ async def ingest_documents(files: List[UploadFile] = File(...)):
 async def query_documents(body: QueryRequest):
     try:
         store = init_qdrant_store()
-        chain = get_rag_chain(store=store, k=body.k, lang=body.lang)
-        answer = chain.invoke(body.question)
-        return QueryResponse(answer=answer, question=body.question)
+        chain = get_rag_chain(store=store, k=body.k)
+        result = chain.invoke(body.question)
+        return QueryResponse(
+            answer=result.answer,
+            question=body.question,
+            sources=[source.__dict__ for source in result.sources],
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception:

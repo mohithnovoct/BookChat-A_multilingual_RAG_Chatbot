@@ -1,12 +1,15 @@
-from typing import List
+from typing import List, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class QueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     question: str = Field(..., min_length=1)
     k: int = Field(default=4, ge=1, le=20)
-    lang: str = Field(default="en", pattern=r"^[a-z]{2}$")
+    answer_language: Literal["en"] = "en"
+    query_language: Literal["auto", "en", "kn", "pa"] = "auto"
 
     @field_validator("question")
     @classmethod
@@ -20,6 +23,14 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     question: str
     answer: str
+    sources: List["SourceReference"] = Field(default_factory=list)
+
+
+class SourceReference(BaseModel):
+    filename: str
+    page: int | None = None
+    chunk_id: int | None = None
+    score: float | None = None
 
 
 class IngestResponse(BaseModel):

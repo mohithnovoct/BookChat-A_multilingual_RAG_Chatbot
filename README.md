@@ -1,6 +1,6 @@
 # BookChat
 
-Multilingual RAG API and UI for ingesting books and documents (PDF, TXT, MD) and chatting with them in **English**, **Kannada (ಕನ್ನಡ)**, and **Punjabi (ਪੰਜਾਬੀ)** with Tesseract OCR support.
+Multilingual RAG API and UI for ingesting books and documents (PDF, TXT, MD) in **English**, **Kannada (ಕನ್ನಡ)**, and **Punjabi (ਪੰਜਾਬੀ)**, then asking English questions answered from multilingual context with Tesseract OCR support.
 
 ## Setup
 
@@ -46,7 +46,7 @@ uv run python -m bookchat.core.generate
 |--------|------|-------------|
 | GET | `/health` | Health check |
 | POST | `/ingest` | Upload PDF/TXT/MD files |
-| POST | `/query` | Ask a question (`question`, optional `k`, `lang`) |
+| POST | `/query` | Ask an English question across all ingested languages (`question`, optional `k`) |
 | DELETE | `/reset` | Clear the vector store |
 
 ### Example
@@ -57,8 +57,10 @@ curl -X POST "http://localhost:8000/ingest" \
 
 curl -X POST "http://localhost:8000/query" \
   -H "Content-Type: application/json" \
-  -d '{"question": "What is the main theme?", "k": 4, "lang": "en"}'
+  -d '{"question": "What is the main theme?", "k": 4, "answer_language": "en", "query_language": "auto"}'
 ```
+
+The query endpoint embeds the English question with the multilingual `BAAI/bge-m3` model, retrieves a broad candidate set, and reranks candidates with the multilingual `BAAI/bge-reranker-v2-m3` cross-encoder before generating an English answer from the best chunks. It searches the shared index containing English, Kannada, and Punjabi chunks. The response also includes structured source references with filename, page, chunk ID, and retrieval score when available.
 
 ## Configuration
 
@@ -66,14 +68,18 @@ curl -X POST "http://localhost:8000/query" \
 |----------|---------|-------------|
 | `HF_TOKEN` | — | Hugging Face API token (required for queries) |
 | `QDRANT_PATH` | `./local_qdrant_db` | Local Qdrant vector store directory |
-| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding model |
-| `CHUNK_SIZE` | `1200` | Characters per chunk for text splitting |
-| `CHUNK_OVERLAP` | `200` | Overlap between consecutive chunks |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Multilingual embedding model |
+| `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Multilingual cross-encoder reranker |
+| `RERANKER_CANDIDATE_K` | `20` | Dense candidates passed to the reranker |
+| `CHUNK_SIZE` | `2500` | Characters per chunk for text splitting |
+| `CHUNK_OVERLAP` | `400` | Overlap between consecutive chunks |
 | `OCR_LANGUAGES` | `kan+pan+eng` | Tesseract OCR language packs |
 | `MAX_UPLOAD_BYTES` | `524288000` (500 MB) | Max upload size per file |
 
 ## Notes
 
 - The `local_qdrant_db/` directory stores the local Qdrant vector database and is gitignored.
+- The first-release query workflow searches all supported document languages and answers in English.
+- Changing `CHUNK_SIZE` or `CHUNK_OVERLAP` requires re-ingesting documents because existing vectors use the previous chunk boundaries.
 - Re-ingesting a file with the same name replaces its existing chunks (upsert by filename).
 - The `/reset` endpoint is unauthenticated — do not expose it publicly without adding auth.

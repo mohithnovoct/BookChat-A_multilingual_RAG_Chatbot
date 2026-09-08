@@ -90,13 +90,9 @@ def _clean_multilingual_text(text: str) -> str:
     if not text:
         return ""
 
-    # 1. Standard Unicode Normalization (NFC)
     text = unicodedata.normalize("NFC", text)
 
-    # 2. Fix spacing around Gurmukhi/Kannada/English sentence delimiters (., !, ?, ।, ॥)
     text = re.sub(r"\s*([।॥\.\!\?])\s*", r"\1 ", text)
-
-    # 3. Collapse multiple whitespace while retaining paragraphs
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
 
@@ -114,7 +110,6 @@ def _is_valid_multilingual_content(text: str) -> bool:
     if not text or len(text.strip()) < 30:
         return False
 
-    # Matches Latin, Gurmukhi, and Kannada scripts
     valid_script_chars = len(
         re.findall(r"[\u0020-\u007F\u0A00-\u0A7F\u0C80-\u0CFF]", text)
     )
