@@ -7,6 +7,8 @@ from typing import List
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+import threading
+
 from bookchat.api.schemas import (
     HealthResponse,
     IngestResponse,
@@ -15,7 +17,7 @@ from bookchat.api.schemas import (
     ResetResponse,
 )
 from bookchat.config import ALLOWED_SUFFIXES, MAX_UPLOAD_BYTES
-from bookchat.core.generate import get_rag_chain
+from bookchat.core.generate import get_rag_chain, warmup_models
 from bookchat.core.ingestion import ingest, init_qdrant_store, reset_store
 
 logging.basicConfig(
@@ -32,6 +34,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    threading.Thread(target=warmup_models, daemon=True, name="model-warmup").start()
+
 
 # ──────── Constants ────────
 
@@ -141,7 +149,11 @@ async def ingest_documents(files: List[UploadFile] = File(...)):
 async def query_documents(body: QueryRequest):
     try:
         store = init_qdrant_store()
-        chain = get_rag_chain(store=store, k=body.k)
+        chain = get_rag_chain(
+            store=store,
+            k=body.k,
+            query_language=body.query_language,
+        )
         result = chain.invoke(body.question)
         return QueryResponse(
             answer=result.answer,

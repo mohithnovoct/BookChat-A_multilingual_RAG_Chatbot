@@ -14,12 +14,19 @@ EMBEDDING_MODEL = os.environ.get(
 RERANKER_MODEL = os.environ.get(
     "RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"
 )
-RERANKER_CANDIDATE_K = int(os.environ.get("RERANKER_CANDIDATE_K", 20))
+RERANKER_CANDIDATE_K = int(os.environ.get("RERANKER_CANDIDATE_K", 40))
+HYBRID_CANDIDATE_K = int(os.environ.get("HYBRID_CANDIDATE_K", 40))
 
-CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 2500))
-CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", 400))
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 600))
+CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", 100))
 
 OCR_LANGUAGES = os.environ.get("OCR_LANGUAGES", "kan+pan+eng")
+OCR_PSM = int(os.environ.get("OCR_PSM", 4))
+OCR_OEM = int(os.environ.get("OCR_OEM", 1))
+
+LLM_MODEL = os.environ.get("LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+LLM_MAX_NEW_TOKENS = int(os.environ.get("LLM_MAX_NEW_TOKENS", 400))
+MIN_RERANK_SCORE = float(os.environ.get("MIN_RERANK_SCORE", "-5.0"))
 
 TESSERACT_CMD = os.environ.get(
     "TESSERACT_CMD",
@@ -37,6 +44,7 @@ POPPLER_PATH = os.environ.get(
 
 ALLOWED_SUFFIXES = {".pdf", ".txt", ".md"}
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", 500 * 1024 * 1024))
+FALLBACK_ANSWER = "Information not found in the source documents."
 
 
 def require_hf_token() -> str:

@@ -7,7 +7,7 @@ class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     question: str = Field(..., min_length=1)
-    k: int = Field(default=4, ge=1, le=20)
+    k: int = Field(default=8, ge=1, le=20)
     answer_language: Literal["en"] = "en"
     query_language: Literal["auto", "en", "kn", "pa"] = "auto"
 
